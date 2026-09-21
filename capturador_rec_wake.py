@@ -1,28 +1,30 @@
 import asyncio
 import json
-import queue
-import threading
 import os
+import queue
 import re
 import unicodedata
+from io import BytesIO
+import numpy as np
+import scipy.spatial.distance
+import soundfile as sf
 import websockets
 import speech_recognition as sr
-import sounddevice as sd
-import numpy as np
-from io import BytesIO
-import soundfile as sf
-from difflib import SequenceMatcher
-from scipy.spatial.distance import euclidean
+from dotenv import load_dotenv
 from resemblyzer import VoiceEncoder, preprocess_wav
 
-SERVER_URI = "ws://localhost:8765"
+# Cargar variables de entorno desde el archivo .env
+load_dotenv()
+
+SERVER_URI = os.getenv("WEBSOCKET_URI", "ws://localhost:8765")
 
 # ==============================================================================
-# CONFIGURACIÓN DE AUDIO Y WAKE WORDS
+# CONFIGURACIÓN DE AUDIO Y WAKE WORDS MAPEADAS POR ROBOT
 # ==============================================================================
-SAMPLE_RATE = 16000
-CHUNK_DURATION = 4  # Ventana de captura continua en segundos
-WAKE_WORDS_BASE = ["alex", "alexa", "robin", "ales", "robot alex", "robot robin"]
+WAKE_WORDS_MAP = {
+    "alex": ["alex", "alexa", "ales", "robot alex"],
+    "robin": ["robin", "rovin", "robot robin"]
+}
 
 def normalizar_texto(texto: str) -> str:
     """Convierte a minúsculas, elimina tildes/acentos y quita puntuación."""
@@ -30,8 +32,6 @@ def normalizar_texto(texto: str) -> str:
     texto = ''.join(c for c in unicodedata.normalize('NFD', texto) if unicodedata.category(c) != 'Mn')
     texto = re.sub(r'[^\w\s]', '', texto)
     return texto.strip()
-
-WAKE_WORDS_CLEAN = [normalizar_texto(w) for w in WAKE_WORDS_BASE]
 
 # ==============================================================================
 # 1. INICIALIZACIÓN DE ENCODER Y BASE DE DATOS DE VOCES
@@ -74,8 +74,6 @@ def cargar_voces_conocidas():
     return voces_db
 
 VOCES_CONOCIDAS = cargar_voces_conocidas()
-
-ROBOT_RECENT_TEXTS = []
 AUDIO_QUEUE = queue.Queue()
 
 # ==============================================================================
@@ -94,7 +92,7 @@ def reconocer_hablante_desde_audio_data(audio_data: sr.AudioData) -> str:
         distancia_min = float("inf")
         
         for nombre, firma_conocida in VOCES_CONOCIDAS.items():
-            dist = euclidean(firma_actual, firma_conocida)
+            dist = scipy.spatial.distance.euclidean(firma_actual, firma_conocida)
             if dist < distancia_min:
                 distancia_min = dist
                 mejor_match = nombre
@@ -108,67 +106,26 @@ def reconocer_hablante_desde_audio_data(audio_data: sr.AudioData) -> str:
         print(f"⚠️ Error identificando voz con Resemblyzer: {e}")
         return "Desconocido"
 
-def contiene_palabra_despertar(text: str) -> bool:
-    """Verifica si el texto normalizado contiene alguna de las wake words."""
+def extraer_target_wake_word(text: str) -> str:
+    """
+    Identifica si la frase contiene una wake word y retorna 'alex' o 'robin'.
+    Retorna None si no hay coincidencia.
+    """
     text_clean = normalizar_texto(text)
-    return any(
-        text_clean.startswith(ww) or f" {ww} " in f" {text_clean} "
-        for ww in WAKE_WORDS_CLEAN
-    )
-
-def is_similar_to_robot_speech(text: str, threshold: float = 0.45) -> bool:
-    """Filtro Anti-Eco para ignorar lo que el robot acaba de decir."""
-    text_clean = normalizar_texto(text)
-    for robot_phrase in ROBOT_RECENT_TEXTS:
-        rf_clean = normalizar_texto(robot_phrase)
-        similarity = SequenceMatcher(None, text_clean, rf_clean).ratio()
-        if similarity >= threshold or (len(text_clean) > 6 and text_clean in rf_clean) or (len(rf_clean) > 6 and rf_clean in text_clean):
-            return True
-    return False
+    
+    for target_robot, aliases in WAKE_WORDS_MAP.items():
+        for alias in aliases:
+            alias_clean = normalizar_texto(alias)
+            if alias_clean.startswith(text_clean) or f" {alias_clean} " in f" {text_clean} " or text_clean.startswith(alias_clean):
+                return target_robot
+    return None
 
 # ==============================================================================
-# 3. TAREAS ASÍNCRONAS Y CAPTURA (USANDO SOUNDDEVICE)
+# 3. CAPTURA Y PROCESAMIENTO (PyAudio)
 # ==============================================================================
-async def listen_robot_broadcaster():
-    """Sincronización anti-eco mediante canal WebSocket."""
-    while True:
-        try:
-            async with websockets.connect(SERVER_URI) as ws:
-                await ws.send(json.dumps({"type": "REGISTER_CAPTURER"}))
-                print("🔗 [CAPTURADOR UNIFICADO] Conectado al servidor con Anti-Eco y Wake Word.")
-                
-                async for message in ws:
-                    data = json.loads(message)
-                    if data.get("type") == "ROBOT_SPOKE":
-                        phrase = data.get("text", "")
-                        if phrase:
-                            ROBOT_RECENT_TEXTS.append(phrase)
-                            if len(ROBOT_RECENT_TEXTS) > 8:
-                                ROBOT_RECENT_TEXTS.pop(0)
-        except Exception:
-            await asyncio.sleep(2)
-
-def background_mic_worker_sounddevice():
-    """Captura continua desde el micrófono usando sounddevice en lugar de PyAudio."""
-    print("[MIC] Captura de micrófono activa (sounddevice)...")
-    while True:
-        try:
-            # Graba en bloques continuos
-            recording = sd.rec(
-                int(CHUNK_DURATION * SAMPLE_RATE), 
-                samplerate=SAMPLE_RATE, 
-                channels=1, 
-                dtype='int16'
-            )
-            sd.wait()
-            
-            # Convierte el buffer de numpy a un objeto AudioData de SpeechRecognition
-            audio_bytes = recording.tobytes()
-            audio_data = sr.AudioData(audio_bytes, SAMPLE_RATE, 2)
-            AUDIO_QUEUE.put(audio_data)
-            
-        except Exception as e:
-            print(f"⚠️ Error en captura de micrófono: {e}")
+def audio_callback(recognizer, audio):
+    """Callback invocado por SpeechRecognition cuando detecta voz."""
+    AUDIO_QUEUE.put(audio)
 
 async def process_audio_queue():
     """Procesa el audio, valida la Wake Word y reconoce al hablante."""
@@ -191,13 +148,9 @@ async def process_audio_queue():
                     if len(words) < 2 and len(clean_text) < 5:
                         continue
 
-                    # Filtro 2: Anti-eco (Descomentar si se requiere)
-                    # if is_similar_to_robot_speech(clean_text):
-                    #    print(f"🛑 [ANTI-ECO] Audio del robot ignorado: \"{clean_text[:35]}...\"")
-                    #    continue
-
-                    # Filtro 3: Comprobar la Palabra de Despertar (normalizada)
-                    if not contiene_palabra_despertar(clean_text):
+                    # Filtro 2: Extraer el robot objetivo desde la Wake Word
+                    target_robot = extraer_target_wake_word(clean_text)
+                    if not target_robot:
                         print(f"💤 [IGNORADO - Sin Wake Word]: \"{clean_text}\"")
                         continue
 
@@ -207,13 +160,14 @@ async def process_audio_queue():
                     )
 
                     label_log = speaker_name if speaker_name != "Desconocido" else "Persona No Registrada"
-                    print(f"\n🔔 [WAKE WORD DETECTADA] 🎤 [{label_log}]: \"{clean_text}\"")
+                    print(f"\n🔔 [WAKE WORD -> {target_robot.upper()}] 🎤 [{label_log}]: \"{clean_text}\"")
                     
-                    # 3. Preparar mensaje para el servidor
+                    # 3. Preparar paquete enviando el destinatario exacto
                     payload = {
                         "type": "HUMAN_INPUT",
                         "speaker": speaker_name if speaker_name != "Desconocido" else "",
                         "is_known_speaker": speaker_name != "Desconocido",
+                        "target": target_robot,  # Envía 'alex' o 'robin'
                         "text": clean_text
                     }
 
@@ -233,15 +187,22 @@ async def process_audio_queue():
         await asyncio.sleep(0.05)
 
 async def main():
-    print(f"[MIC] ¡Sistema listo! Esperando palabras de activación: {WAKE_WORDS_BASE}...\n")
+    print(f"[MIC] ¡Sistema listo! Esperando palabras de activación (Alex / Robin)...\n")
 
-    # Iniciar el hilo de grabación con sounddevice
-    threading.Thread(target=background_mic_worker_sounddevice, daemon=True).start()
+    recognizer = sr.Recognizer()
+    recognizer.energy_threshold = 300
+    recognizer.dynamic_energy_threshold = True
+    
+    mic = sr.Microphone()
+    with mic as source:
+        recognizer.adjust_for_ambient_noise(source, duration=1)
 
-    await asyncio.gather(
-        process_audio_queue(),
-        listen_robot_broadcaster()
-    )
+    stop_listening = recognizer.listen_in_background(mic, audio_callback)
+
+    try:
+        await process_audio_queue()
+    finally:
+        stop_listening(wait_for_stop=False)
 
 if __name__ == "__main__":
     try:

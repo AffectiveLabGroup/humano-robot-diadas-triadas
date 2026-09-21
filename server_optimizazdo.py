@@ -24,7 +24,7 @@ client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 CONNECTED_ROBOTS: Dict[str, websockets.WebSocketServerProtocol] = {}
 CONNECTED_CAPTURERS: Set[websockets.WebSocketServerProtocol] = set()
 
-CURRENT_CONDITION = "A"  # 'A': 1H+1R, 'B': 2H+1R, 'C': 1H+2R, 'D': 2H+2R
+CURRENT_CONDITION = "C"  # 'A': 1H+1R, 'B': 2H+1R, 'C': 1H+2R, 'D': 2H+2R
 CURRENT_EXECUTION_TASK: Optional[asyncio.Task] = None
 
 # Memoria de conversación global (para dar contexto completo al LLM)
@@ -40,7 +40,7 @@ class Turn(BaseModel):
     )
     text: str = Field(description="Texto exacto que el robot dirá mediante TTS (12-22 palabras).")
     
-    # Campo de emocíón para la pantalla del Sanbot
+    # Campo de emoción para la pantalla del Sanbot
     emotion: Literal["NEUTRAL", "HAPPY", "SURPRISED", "THINKING", "DISAGREE"] = Field(
         description="Expresión facial o emoción que mostrará la pantalla del robot durante la frase."
     )
@@ -72,23 +72,24 @@ BASE_SYSTEM_PROMPT = """
 Eres el Orquestador de Diálogo para dos robots sociales (ROBOT_ALEX y ROBOT_ROBIN).
 Tu objetivo es una conversación CASUAL y NATURAL.
 
-DATOS OBLIGATORIOS:
+DATOS OBLIGATORIOS DE OPINIÓN:
 - MADRID: Alquiler 1.200€, Transporte 45 min, Sueldo 2.100€. Oferta cultural alta, estresante.
 - ZARAGOZA: Alquiler 700€, Transporte 20 min, Sueldo 1.650€. Equilibrio.
 - PUEBLO: Alquiler 400€, Transporte 0 min en pueblo (45 en coche). Tranquilidad, sin ocio.
 
-REGLAS:
-- Prohibido revelar que eres IA. Sin frases vacías ("Entiendo", "Aprecio tu punto").
-- Responde directo. Longitud por turno: 12 a 22 palabras por intervención.
-- Emociones válidas: SURPRISED, DISAGREE, HAPPY, THINKING, NEUTRAL.
-- Acciones válidas: LOOK_AT_H1, LOOK_AT_H2, LOOK_AT_GROUP, LOOK_AT_OTHER_ROBOT, RAISE_ARMS, NOD_HEAD, IDLE.
+REGLAS DE DIRECCIÓN Y TURNOS:
+1. SI EL MENSAJE INDICA UN 'ROBOT DESTINATARIO', ESE ROBOT DEBE SER OBLIGATORIAMENTE EL PRIMERO EN ENTRAR EN turn_sequence (ej: Si el destinatario es 'robin', el primer Turn debe ser ROBOT_ROBIN).
+2. Prohibido revelar que eres IA. Sin frases vacías ("Entiendo", "Aprecio tu punto").
+3. Responde directo. Longitud por turno: 12 a 22 palabras por intervención.
+4. Emociones válidas: SURPRISED, DISAGREE, HAPPY, THINKING, NEUTRAL.
+5. Acciones válidas: LOOK_AT_H1, LOOK_AT_H2, LOOK_AT_GROUP, LOOK_AT_OTHER_ROBOT, RAISE_ARMS, NOD_HEAD, IDLE.
 """
 
 CONDITION_RULES = {
     "A": "CONDICIÓN A (1 Humano + ROBOT_ALEX): Habla solo ROBOT_ALEX. PERFIL: Pragmático.",
     "B": "CONDICIÓN B (2 Humanos + ROBOT_ALEX): Si H1 y H2 hablan entre sí, responde turn_sequence: []. Si te invocan o hay silencio, genera 1 turno de ROBOT_ALEX.",
-    "C": "CONDICIÓN C (1 Humano + ALEX + ROBIN): ALEX defiende Madrid. ROBIN defiende Zaragoza/Pueblo. Genera 2-3 turnos cruzados intercalados.",
-    "D": "CONDICIÓN D (2 Humanos + ALEX + ROBIN): ALEX defiende Madrid. ROBIN defiende Zaragoza/Pueblo. Genera 2-3 turnos cruzados intercalados."
+    "C": "CONDICIÓN C (1 Humano + ALEX + ROBIN): ALEX defiende Madrid. ROBIN defiende Zaragoza/Pueblo. Genera 1-3 turnos cruzados empezando por el robot invocado.",
+    "D": "CONDICIÓN D (2 Humanos + ALEX + ROBIN): ALEX defiende Madrid. ROBIN defiende Zaragoza/Pueblo. Genera 1-3 turnos cruzados empezando por el robot invocado."
 }
 
 # ==============================================================================
@@ -112,8 +113,10 @@ async def stop_all_robots():
         except Exception:
             pass
 
-async def get_turn_plan(condition: str, speaker: str, text: str) -> TurnPlan:
-    CONVERSATION_HISTORY.append({"role": "user", "content": f"[{speaker}]: {text}"})
+async def get_turn_plan(condition: str, speaker: str, text: str, target_robot: Optional[str] = None) -> TurnPlan:
+    # Añadir contexto del usuario especificando destinatario si existe
+    target_str = f" | Dirigido a: ROBOT_{target_robot.upper()}" if target_robot else ""
+    CONVERSATION_HISTORY.append({"role": "user", "content": f"[{speaker}{target_str}]: {text}"})
     
     # ⚡ OPTIMIZACIÓN 1: Enviar máximo los últimos 4 mensajes
     recent_history = CONVERSATION_HISTORY[-4:]
@@ -125,13 +128,14 @@ async def get_turn_plan(condition: str, speaker: str, text: str) -> TurnPlan:
     for entry in recent_history[:-1]:
         messages.append({"role": entry["role"], "content": entry["content"]})
         
+    prompt_user = f"Hablante: {speaker}{target_str} | Mensaje: \"{text}\"\nGenera el TurnPlan."
     messages.append({
         "role": "user",
-        "content": f"Hablante: {speaker} | Mensaje: \"{text}\"\nGenera el TurnPlan."
+        "content": prompt_user
     })
 
     try:
-        # ⚡ OPTIMIZACIÓN 3: Parámetros de velocidad (temperature más baja y max_tokens acotado)
+        # ⚡ OPTIMIZACIÓN 3: Parámetros de velocidad
         completion = await client.beta.chat.completions.parse(
             model="gpt-4o-mini",
             messages=messages,
@@ -179,7 +183,6 @@ async def execute_turn_plan(plan: TurnPlan):
                 # 🟢 TRADUCCIÓN INTELIGENTE DE MIRADAS AL OTRO ROBOT
                 action_to_send = step.action
                 if step.action == "LOOK_AT_OTHER_ROBOT":
-                    # Si habla Alex, la orden física es mirar a Robin; si habla Robin, mirar a Alex.
                     action_to_send = "LOOK_AT_ROBIN" if target_robot == "ROBOT_ALEX" else "LOOK_AT_ALEX"
 
                 # 🟢 Notificamos al Sanbot con la emoción y la acción seleccionadas
@@ -242,11 +245,13 @@ async def handler(websocket):
                 elif msg_type == "HUMAN_INPUT":
                     speaker = data.get("speaker", "H1")
                     text = data.get("text", "").strip()
+                    target = data.get("target")  # 🟢 EXTRAEMOS EL TARGET ('alex' o 'robin')
 
                     if not text:
                         continue
 
-                    print(f"\n🎤 [ENTRADA HUMANA - {speaker}]: '{text}'")
+                    log_target = f" -> Dirigido a {target.upper()}" if target else ""
+                    print(f"\n🎤 [ENTRADA HUMANA - {speaker}{log_target}]: '{text}'")
 
                     if CURRENT_EXECUTION_TASK and not CURRENT_EXECUTION_TASK.done():
                         print("🚨 [CORTE] Cancelando habla anterior del robot por interrupción humana...")
@@ -260,7 +265,8 @@ async def handler(websocket):
                         except Exception as e:
                             print(f"⚠️ Error enviando estado de procesamiento a {r_id}: {e}")
 
-                    plan = await get_turn_plan(CURRENT_CONDITION, speaker, text)
+                    # 🟢 PASAMOS EL TARGET A LA GENERACIÓN DEL PLAN
+                    plan = await get_turn_plan(CURRENT_CONDITION, speaker, text, target_robot=target)
                     CURRENT_EXECUTION_TASK = asyncio.create_task(execute_turn_plan(plan))
 
             except json.JSONDecodeError:
