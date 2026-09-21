@@ -1,0 +1,3 @@
+# Ignorar archivos de variables de entorno (claves y secretos)
+.env
+.env.local
