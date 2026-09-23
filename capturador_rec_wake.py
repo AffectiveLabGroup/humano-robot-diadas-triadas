@@ -3,8 +3,10 @@ import json
 import os
 import queue
 import re
+import time
 import unicodedata
 from io import BytesIO
+from difflib import SequenceMatcher 
 import numpy as np
 import scipy.spatial.distance
 import soundfile as sf
@@ -19,12 +21,19 @@ load_dotenv()
 SERVER_URI = os.getenv("WEBSOCKET_URI", "ws://localhost:8765")
 
 # ==============================================================================
-# CONFIGURACIÓN DE AUDIO Y WAKE WORDS MAPEADAS POR ROBOT
+# CONFIGURACIÓN DE AUDIO, WAKE WORDS Y VENTANA DE ATENCIÓN
 # ==============================================================================
+ROBOT_RECENT_TEXTS = []
+
 WAKE_WORDS_MAP = {
+    "robots": ["robots", "robot"],
     "alex": ["alex", "alexa", "ales", "robot alex"],
     "robin": ["robin", "rovin", "robot robin"]
 }
+
+ATTENTION_WINDOW_SECONDS = 6.0  # Segundos que el robot se queda escuchando tras decir su nombre
+ACTIVE_TARGET = None            # Robot que está actualmente en estado "atento" ('alex' o 'robin')
+LAST_WAKE_WORD_TIME = 0.0       # Marca de tiempo (timestamp) de cuando se dijo la wake word
 
 def normalizar_texto(texto: str) -> str:
     """Convierte a minúsculas, elimina tildes/acentos y quita puntuación."""
@@ -32,6 +41,21 @@ def normalizar_texto(texto: str) -> str:
     texto = ''.join(c for c in unicodedata.normalize('NFD', texto) if unicodedata.category(c) != 'Mn')
     texto = re.sub(r'[^\w\s]', '', texto)
     return texto.strip()
+
+def es_eco_del_robot(texto_capturado: str) -> bool:
+    """Compara si la frase escuchada se parece a lo que acaba de decir un robot."""
+    clean_cap = normalizar_texto(texto_capturado)
+    if not clean_cap:
+        return False
+
+    for frase_robot in list(ROBOT_RECENT_TEXTS):
+        clean_robot = normalizar_texto(frase_robot)
+        
+        # Coincidencia por similitud de subsecuencia (> 60% igual = Eco)
+        ratio = SequenceMatcher(None, clean_cap, clean_robot).ratio()
+        if ratio > 0.60 or clean_cap in clean_robot:
+            return True
+    return False
 
 # ==============================================================================
 # 1. INICIALIZACIÓN DE ENCODER Y BASE DE DATOS DE VOCES
@@ -51,10 +75,11 @@ def extraer_firma_desde_path(file_path):
 def cargar_voces_conocidas():
     """Precarga las firmas promedio de cada persona al arrancar."""
     voces_config = {
-        "Paula": ["voices/paula_ref.wav", "voices/paula_ref2.wav", "voices/paula_ref3.wav", "voices/paula_ref4.wav"],
+        "Paula": ["voices/paula_ref2.wav", "voices/paula_ref3.wav", "voices/paula_ref4.wav"],
         "Loreto": ["voices/loreto_ref.wav", "voices/loreto_ref2.wav", "voices/loreto_ref3.wav", "voices/loreto_ref4.wav"],
         "Liany": ["voices/liany_ref.wav", "voices/liany_ref2.wav", "voices/liany_ref3.wav", "voices/liany_ref4.wav"],
-        "Juan Jesus": ["voices/juanje_ref.wav", "voices/juanje_ref2.wav", "voices/juanje_ref3.wav", "voices/juanje_ref4.wav"]
+        "Juan Jesus": ["voices/juanje_ref.wav", "voices/juanje_ref2.wav", "voices/juanje_ref3.wav", "voices/juanje_ref4.wav"],
+        "Eva": ["voices/eva_ref.wav", "voices/eva_ref2.wav", "voices/eva_ref3.wav", "voices/eva_ref4.wav"]
     }
     
     voces_db = {}
@@ -79,8 +104,11 @@ AUDIO_QUEUE = queue.Queue()
 # ==============================================================================
 # 2. FUNCIONES DE RECONOCIMIENTO Y FILTROS
 # ==============================================================================
-def reconocer_hablante_desde_audio_data(audio_data: sr.AudioData) -> str:
-    """Extrae la huella del objeto AudioData y busca el match más cercano."""
+def reconocer_hablante_desde_audio_data(audio_data: sr.AudioData) -> tuple[str, float]:
+    """
+    Extrae la huella del objeto AudioData y calcula la similitud del coseno (0 a 100%).
+    Retorna una tupla: (Nombre_o_Desconocido, Porcentaje_Similitud).
+    """
     try:
         wav_bytes = audio_data.get_wav_data(convert_rate=16000, convert_width=2)
         wav, sr_rate = sf.read(BytesIO(wav_bytes))
@@ -88,47 +116,85 @@ def reconocer_hablante_desde_audio_data(audio_data: sr.AudioData) -> str:
         wav_preprocessed = preprocess_wav(wav, source_sr=sr_rate)
         firma_actual = encoder.embed_utterance(wav_preprocessed)
         
-        mejor_match = None
-        distancia_min = float("inf")
+        mejor_match = "Desconocido"
+        max_similitud = 0.0
         
+        # Umbral mínimo de certeza (75% de similitud)
+        UMBRAL_CERTEZA = 0.75 
+
         for nombre, firma_conocida in VOCES_CONOCIDAS.items():
-            dist = scipy.spatial.distance.euclidean(firma_actual, firma_conocida)
-            if dist < distancia_min:
-                distancia_min = dist
-                mejor_match = nombre
-                
-        if distancia_min > 0.85:
-            return "Desconocido"
+            # Similitud del Coseno: 1.0 es idéntico, 0.0 es totalmente distinto
+            dot_product = np.dot(firma_actual, firma_conocida)
+            norm_a = np.linalg.norm(firma_actual)
+            norm_b = np.linalg.norm(firma_conocida)
             
-        return mejor_match
+            if norm_a > 0 and norm_b > 0:
+                similitud = dot_product / (norm_a * norm_b)
+                
+                if similitud > max_similitud:
+                    max_similitud = similitud
+                    mejor_match = nombre
+        
+        # Casteo explícito a float nativo de Python para prevenir errores de JSON
+        porcentaje = float(max_similitud * 100)
+
+        if max_similitud < UMBRAL_CERTEZA:
+            return "Desconocido", porcentaje
+
+        return mejor_match, porcentaje
 
     except Exception as e:
         print(f"⚠️ Error identificando voz con Resemblyzer: {e}")
-        return "Desconocido"
+        return "Desconocido", 0.0
 
 def extraer_target_wake_word(text: str) -> str:
-    """
-    Identifica si la frase contiene una wake word y retorna 'alex' o 'robin'.
-    Retorna None si no hay coincidencia.
-    """
+    """Identifica si la frase contiene una wake word y retorna 'alex', 'robin' o 'robots'."""
     text_clean = normalizar_texto(text)
     
     for target_robot, aliases in WAKE_WORDS_MAP.items():
         for alias in aliases:
             alias_clean = normalizar_texto(alias)
-            if alias_clean.startswith(text_clean) or f" {alias_clean} " in f" {text_clean} " or text_clean.startswith(alias_clean):
+            if text_clean == alias_clean or f" {alias_clean} " in f" {text_clean} " or text_clean.startswith(alias_clean + " "):
                 return target_robot
     return None
 
+def es_solo_wake_word(text: str, target_robot: str) -> bool:
+    """Devuelve True si el usuario solo pronunció el nombre del robot y nada más."""
+    text_clean = normalizar_texto(text)
+    aliases = WAKE_WORDS_MAP.get(target_robot, [])
+    return any(text_clean == normalizar_texto(alias) for alias in aliases)
+
 # ==============================================================================
-# 3. CAPTURA Y PROCESAMIENTO (PyAudio)
+# 3. ESCUCHA DE FRASES DEL ROBOT (Servidor -> Capturador)
+# ==============================================================================
+async def listen_server_broadcasts():
+    """Conecta por WebSocket al orquestador para saber qué frases dicen los robots en tiempo real."""
+    while True:
+        try:
+            async with websockets.connect(SERVER_URI) as ws:
+                await ws.send(json.dumps({"type": "REGISTER_CAPTURER"}))
+                
+                async for msg in ws:
+                    data = json.loads(msg)
+                    if data.get("type") == "ROBOT_SPOKE":
+                        texto = data.get("text", "")
+                        if texto:
+                            ROBOT_RECENT_TEXTS.append(texto)
+                            if len(ROBOT_RECENT_TEXTS) > 5:
+                                ROBOT_RECENT_TEXTS.pop(0)
+        except Exception:
+            await asyncio.sleep(2)
+
+# ==============================================================================
+# 4. CAPTURA Y PROCESAMIENTO CON VENTANA DE ATENCIÓN
 # ==============================================================================
 def audio_callback(recognizer, audio):
     """Callback invocado por SpeechRecognition cuando detecta voz."""
     AUDIO_QUEUE.put(audio)
 
 async def process_audio_queue():
-    """Procesa el audio, valida la Wake Word y reconoce al hablante."""
+    """Procesa el audio, gestiona la ventana de atención y envía la señal al orquestador."""
+    global ACTIVE_TARGET, LAST_WAKE_WORD_TIME
     recognizer = sr.Recognizer()
     
     while True:
@@ -143,31 +209,55 @@ async def process_audio_queue():
                 
                 clean_text = raw_text.strip()
                 if clean_text:
-                    # Filtro 1: Ruido o frases extremadamente cortas
-                    words = clean_text.split()
-                    if len(words) < 2 and len(clean_text) < 5:
+
+                    # FILTRO ANTI-ECO
+                    if es_eco_del_robot(clean_text):
+                        print(f" 🤫 [FILTRO ECO ROBOT - IGNORADO]: \"{clean_text}\"")
                         continue
 
-                    # Filtro 2: Extraer el robot objetivo desde la Wake Word
+                    now = time.time()
                     target_robot = extraer_target_wake_word(clean_text)
-                    if not target_robot:
-                        print(f"💤 [IGNORADO - Sin Wake Word]: \"{clean_text}\"")
+
+                    # --- LÓGICA DE CONTROL DE LA VENTANA DE ATENCIÓN ---
+                    if target_robot:
+                        ACTIVE_TARGET = target_robot
+                        LAST_WAKE_WORD_TIME = now
+
+                        if es_solo_wake_word(clean_text, target_robot):
+                            print(f"\n👀 [WAKE WORD: {target_robot.upper()}]: Detectado nombre suelto. Escuchando durante {ATTENTION_WINDOW_SECONDS}s...")
+                            continue
+
+                    elif ACTIVE_TARGET and (now - LAST_WAKE_WORD_TIME < ATTENTION_WINDOW_SECONDS):
+                        target_robot = ACTIVE_TARGET
+                        print(f"⏱️ [VENTANA ACTIVA -> {target_robot.upper()}]: Mensaje capturado dentro del tiempo de espera.")
+
+                    else:
+                        print(f"💤 [IGNORADO - Sin Wake Word / Fuera de ventana]: \"{clean_text}\"")
                         continue
 
-                    # 2. Identificar a la persona usando Resemblyzer
-                    speaker_name = await asyncio.to_thread(
+                    # Si llegamos aquí, la frase es válida. Consumimos la atención.
+                    ACTIVE_TARGET = None 
+
+                    # 2. Identificar a la persona usando la función con Similitud del Coseno
+                    speaker_name, certeza = await asyncio.to_thread(
                         reconocer_hablante_desde_audio_data, audio
                     )
 
-                    label_log = speaker_name if speaker_name != "Desconocido" else "Persona No Registrada"
-                    print(f"\n🔔 [WAKE WORD -> {target_robot.upper()}] 🎤 [{label_log}]: \"{clean_text}\"")
+                    es_conocido = speaker_name != "Desconocido"
                     
-                    # 3. Preparar paquete enviando el destinatario exacto
+                    # Log claro para depurar en consola
+                    if es_conocido:
+                        print(f"\n🔔 [ENVIANDO -> {target_robot.upper()}] 🎤 Hablante: {speaker_name} ({certeza:.1f}% certeza) | Frase: \"{clean_text}\"")
+                    else:
+                        print(f"\n🔔 [ENVIANDO -> {target_robot.upper()}] 🎤 Hablante: Persona No Registrada (Máx. Similitud: {certeza:.1f}%) | Frase: \"{clean_text}\"")
+                    
+                    # 3. Preparar paquete para el orquestador
                     payload = {
                         "type": "HUMAN_INPUT",
-                        "speaker": speaker_name if speaker_name != "Desconocido" else "",
-                        "is_known_speaker": speaker_name != "Desconocido",
-                        "target": target_robot,  # Envía 'alex' o 'robin'
+                        "speaker": speaker_name if es_conocido else "Persona",
+                        "is_known_speaker": es_conocido,
+                        "confidence": round(float(certeza), 2), # Aseguramos casteo a float nativo
+                        "target": target_robot,
                         "text": clean_text
                     }
 
@@ -187,11 +277,13 @@ async def process_audio_queue():
         await asyncio.sleep(0.05)
 
 async def main():
-    print(f"[MIC] ¡Sistema listo! Esperando palabras de activación (Alex / Robin)...\n")
+    print(f"[MIC] ¡Sistema listo! Esperando Wake Words con atención de {ATTENTION_WINDOW_SECONDS}s...\n")
 
     recognizer = sr.Recognizer()
     recognizer.energy_threshold = 300
     recognizer.dynamic_energy_threshold = True
+    
+    recognizer.pause_threshold = 0.8 
     
     mic = sr.Microphone()
     with mic as source:
@@ -200,7 +292,10 @@ async def main():
     stop_listening = recognizer.listen_in_background(mic, audio_callback)
 
     try:
-        await process_audio_queue()
+        await asyncio.gather(
+            listen_server_broadcasts(),
+            process_audio_queue()
+        )
     finally:
         stop_listening(wait_for_stop=False)
 

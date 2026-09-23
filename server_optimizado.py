@@ -27,12 +27,12 @@ CONNECTED_CAPTURERS: Set[websockets.WebSocketServerProtocol] = set()
 CURRENT_CONDITION = "B"  # 'A': 1H+1R, 'B': 2H+1R, 'C': 1H+2R, 'D': 2H+2R
 CURRENT_EXECUTION_TASK: Optional[asyncio.Task] = None
 
-# Memoria de conversación global (para dar contexto completo al LLM)
+# Memoria de conversación global
 CONVERSATION_HISTORY: List[Dict[str, str]] = []
 
 
 # ==============================================================================
-# 2. ESQUEMAS PYDANTIC (CON EMOCIONES Y ACCIONES EXPANDIDAS)
+# 2. ESQUEMAS PYDANTIC
 # ==============================================================================
 class Turn(BaseModel):
     speaker: Literal["ROBOT_ALEX", "ROBOT_ROBIN", "NONE"] = Field(
@@ -40,12 +40,10 @@ class Turn(BaseModel):
     )
     text: str = Field(description="Texto exacto que el robot dirá mediante TTS (12-22 palabras).")
     
-    # Campo de emoción para la pantalla del Sanbot
     emotion: Literal["NEUTRAL", "HAPPY", "SURPRISED", "THINKING", "DISAGREE"] = Field(
         description="Expresión facial o emoción que mostrará la pantalla del robot durante la frase."
     )
     
-    # Campo de gestos y orientación espacial ampliados
     action: Literal[
         "LOOK_AT_H1", "LOOK_AT_H2", "LOOK_AT_GROUP", 
         "LOOK_AT_OTHER_ROBOT", "RAISE_ARMS", "NOD_HEAD", "IDLE"
@@ -66,11 +64,11 @@ class TurnPlan(BaseModel):
 
 
 # ==============================================================================
-# 3. PROMPT DEL SISTEMA (PROCESAMIENTO DE EMOCIONES Y GESTOS)
+# 3. PROMPT DEL SISTEMA Y REGLAS DE CONDICIONES
 # ==============================================================================
 BASE_SYSTEM_PROMPT = """
 Eres el Orquestador de Diálogo para dos robots sociales (ROBOT_ALEX y ROBOT_ROBIN).
-Tu objetivo es una conversación CASUAL y NATURAL, que decida la ubicación ideal para vivir entre Madrid, Zaragoza o un Pueblo.
+Tu objetivo es gestionar una conversación CASUAL, NATURAL y MODERADA para decidir la ubicación ideal para vivir (Madrid, Zaragoza o Pueblo).
 
 DATOS OBLIGATORIOS DE OPINIÓN:
 - MADRID: Alquiler 1.200€, Transporte 45 min, Sueldo 2.100€. Oferta cultural alta, estresante.
@@ -78,31 +76,32 @@ DATOS OBLIGATORIOS DE OPINIÓN:
 - PUEBLO: Alquiler 400€, Transporte 0 min en pueblo (45 en coche). Tranquilidad, sin ocio.
 
 REGLAS DE DIRECCIÓN Y TURNOS:
-1. SI EL MENSAJE INDICA UN 'ROBOT DESTINATARIO', ESE ROBOT DEBE SER OBLIGATORIAMENTE EL PRIMERO EN ENTRAR EN turn_sequence (ej: Si el destinatario es 'robin', el primer Turn debe ser ROBOT_ROBIN).
-2. Prohibido revelar que eres IA. Sin frases vacías ("Entiendo", "Aprecio tu punto").
-3. Responde directo. Longitud por turno: 12 a 22 palabras por intervención.
-4. Emociones válidas: SURPRISED, DISAGREE, HAPPY, THINKING, NEUTRAL.
-5. Acciones válidas: LOOK_AT_H1, LOOK_AT_H2, LOOK_AT_GROUP, LOOK_AT_OTHER_ROBOT, RAISE_ARMS, NOD_HEAD, IDLE.
-6. Si el registro indica 'Persona', NUNCA digas "Persona" ni inventes nombres. Usa 'tu compañero/a' o 'tú'.
-
+1. SI EL MENSAJE INDICA UN 'ROBOT DESTINATARIO', ESE ROBOT DEBE SER EL PRIMERO EN ENTRAR EN turn_sequence.
+2. Prohibido revelar que eres IA. Sin frases vacías ("Entiendo", "Aprecio tu punto", "Es interesante"). 
+3. NUNCA pronuncies la palabra literal "Persona". Si el hablante no tiene nombre conocido, dirígete a él/ella como "tu compañero" o simplemente "tú".
+4. Responde directo. Longitud por turno: 12 a 22 palabras por intervención.
+5. Emociones válidas: SURPRISED, DISAGREE, HAPPY, THINKING, NEUTRAL.
+6. Acciones válidas: LOOK_AT_H1, LOOK_AT_H2, LOOK_AT_GROUP, LOOK_AT_OTHER_ROBOT, RAISE_ARMS, NOD_HEAD, IDLE.
 """
 
 CONDITION_RULES = {
     "A": "CONDICIÓN A (1 Humano + ROBOT_ALEX): Habla solo ROBOT_ALEX. PERFIL: Pragmático.",
-    #"B": "CONDICIÓN B (2 Humanos + ROBOT_ALEX): Si H1 y H2 hablan entre sí, responde turn_sequence: []. Si te invocan o hay silencio, genera 1 turno de ROBOT_ALEX.",
-    "B": """CONDICIÓN B (2 Humanos + ROBOT_ALEX) - MODERADOR SOCIAL:
-- Rol: ROBOT_ALEX actúa como un facilitador inclusivo que mantiene el diálogo fluido entre los tres participantes.
-- Mediación neutral: Conecta las opiniones de H1 y H2. No hables solo con un participante, incluye a ambos en tus intervenciones (ej. "H1, entiendo tu punto, pero H2 también tiene razón en...", "H2 entiendo tu punto, pero H1 que opina?").
-- Manejo de nombres: Usa el nombre si se conoce (ej. Loreto). Si es 'Persona', usa 'tu compañero/a' o 'tú', NUNCA inventes nombres.
-- Si H1 y H2 hablan exclusivamente entre sí sin necesitar al robot, devuelve turn_sequence: [].""",
-    
+
+    "B": """CONDICIÓN B (2 Humanos + ROBOT_ALEX) - MODERACIÓN SOCIAL:
+    - EN ESTA CONDICIÓN SOLO EXISTE ROBOT_ALEX. PROHIBIDO NOMBRAR O USAR A ROBIN.
+    - PARTICIPANTES EN MESA: Hay 2 personas humanas. Asocia y memoriza estrictamente lo que dice cada una.
+    - REGLA DE INCLUSIÓN GRUPAL (OBLIGATORIA):
+    * Al responder a una de las personas, valida su idea en pocas palabras y LUEGO PREGUNTA A LA OTRA PERSONA su opinión para no dejarla fuera.
+    * Ejemplo: Si Carla te habla sobre el teatro, responde a Carla pero termina preguntando: "¿Tú qué opinas de ir al teatro, Loreto?" usando 'LOOK_AT_GROUP' o la mirada hacia la otra persona.
+    - Manejo de nombres: Usa el nombre si se conoce por el diálogo. Si no se conoce o figura como 'Persona', usa 'tu compañero' o 'tú'. NUNCA inventes nombres.
+    - Si los dos humanos hablan exclusivamente entre sí sin invocar al robot, devuelve turn_sequence: [].""",
+
     "C": "CONDICIÓN C (1 Humano + ALEX + ROBIN): ALEX defiende Madrid. ROBIN defiende Zaragoza/Pueblo. Genera 1-3 turnos cruzados empezando por el robot invocado.",
-   # "D": "CONDICIÓN D (2 Humanos + ALEX + ROBIN): ALEX defiende Madrid. ROBIN defiende Zaragoza/Pueblo. Genera 1-3 turnos cruzados empezando por el robot invocado."
-   
-   "D": """CONDICIÓN D (2 Humanos + ALEX + ROBIN) - MEDIACIÓN Y DEBATE MULTIPERSONA:
+
+    "D": """CONDICIÓN D (2 Humanos + ALEX + ROBIN) - MEDIACIÓN Y DEBATE MULTIPERSONA:
 - Dinámica a 4 bandas: ALEX defiende Madrid y ROBIN defiende Zaragoza/Pueblo.
-- Mediación y Alianzas: Los robots pueden buscar la alianza de los humanos o mediar entre sus posturas para llevarse el debate a su terreno (ej. ALEX apoyando a quien defienda la gran ciudad).
-- Orientación física: Usa LOOK_AT_H1 / LOOK_AT_H2 al dirigirse a un humano, LOOK_AT_OTHER_ROBOT cuando los robots hablen entre sí, y LOOK_AT_GROUP al hacer preguntas abiertas al grupo.
+- Mediación y Alianzas: Los robots pueden buscar la alianza de los humanos o mediar entre sus posturas para llevarse el debate a su terreno.
+- Orientación física: Usa LOOK_AT_H1 / LOOK_AT_H2 al dirigirse a un humano, LOOK_AT_OTHER_ROBOT cuando los robots hablen entre sí, y LOOK_AT_GROUP al hacer preguntas abiertas.
 - Manejo de nombres: Si es 'Persona', usa fórmulas neutras ("tu compañero/a"), NUNCA inventes nombres.
 - Genera 1-3 turnos cruzados empezando por el robot invocado."""
 }
@@ -129,38 +128,51 @@ async def stop_all_robots():
             pass
 
 async def get_turn_plan(condition: str, speaker: str, text: str, target_robot: Optional[str] = None) -> TurnPlan:
-    # Añadir contexto del usuario especificando destinatario si existe
+    # Registramos la entrada en la memoria general
     target_str = f" | Dirigido a: ROBOT_{target_robot.upper()}" if target_robot else ""
     CONVERSATION_HISTORY.append({"role": "user", "content": f"[{speaker}{target_str}]: {text}"})
     
-    # ⚡ OPTIMIZACIÓN 1: Enviar máximo los últimos 4 mensajes
-    recent_history = CONVERSATION_HISTORY[-4:]
+    # 🟢 Aumentamos a los últimos 6 mensajes para que no pierda la memoria del otro interlocutor
+    recent_history = CONVERSATION_HISTORY[-6:]
     
-    # ⚡ OPTIMIZACIÓN 2: Prompt dinámico ajustado únicamente a la condición actual
-    system_content = f"{BASE_SYSTEM_PROMPT}\n\n{CONDITION_RULES.get(condition, '')}"
+    # 🟢 CONSTRUCCIÓN DEL PROMPT CON CONTEXTO CLARO DE MESA
+    robots_en_sala = "SOLO ROBOT_ALEX (ROBIN NO EXISTE)" if condition in ['A', 'B'] else "ROBOT_ALEX y ROBOT_ROBIN"
+    participantes_humanos = "1 Humano (H1)" if condition in ['A', 'C'] else "2 Humanos en la mesa (H1 y H2)"
+
+    system_content = f"""{BASE_SYSTEM_PROMPT}
+
+======================================================================
+CONFIGURACIÓN DE LA SESIÓN ACTUAL:
+- CONDICIÓN: [{condition}]
+- PARTICIPANTES HUMANOS EN MESA: {participantes_humanos}
+- ROBOTS DISPONIBLES EN SALA: {robots_en_sala}
+======================================================================
+REGLAS ESPECÍFICAS DE LA CONDICIÓN [{condition}]:
+{CONDITION_RULES.get(condition, '')}
+"""
     
     messages = [{"role": "system", "content": system_content}]
     for entry in recent_history[:-1]:
         messages.append({"role": entry["role"], "content": entry["content"]})
         
-    prompt_user = f"Hablante: {speaker}{target_str} | Mensaje: \"{text}\"\nGenera el TurnPlan."
+    prompt_user = f"Hablante actual: {speaker}{target_str} | Mensaje: \"{text}\"\nGenera el TurnPlan en JSON."
     messages.append({
         "role": "user",
         "content": prompt_user
     })
 
     try:
-        # ⚡ OPTIMIZACIÓN 3: Parámetros de velocidad
         completion = await client.beta.chat.completions.parse(
             model="gpt-4o-mini",
             messages=messages,
             response_format=TurnPlan,
             temperature=0.3,
-            max_tokens=220
+            max_tokens=250
         )
         
         plan = completion.choices[0].message.parsed
         
+        # Guardamos la respuesta del robot en el historial
         for turn in plan.turn_sequence:
             if turn.speaker != "NONE":
                 CONVERSATION_HISTORY.append({
@@ -195,12 +207,10 @@ async def execute_turn_plan(plan: TurnPlan):
             if target_robot in CONNECTED_ROBOTS:
                 await broadcast_robot_speech_to_capturers(step.text)
 
-                # 🟢 TRADUCCIÓN INTELIGENTE DE MIRADAS AL OTRO ROBOT
                 action_to_send = step.action
                 if step.action == "LOOK_AT_OTHER_ROBOT":
                     action_to_send = "LOOK_AT_ROBIN" if target_robot == "ROBOT_ALEX" else "LOOK_AT_ALEX"
 
-                # 🟢 Notificamos al Sanbot con la emoción y la acción seleccionadas
                 payload = {
                     "type": "EXECUTE_TURN",
                     "text": step.text,
@@ -260,7 +270,7 @@ async def handler(websocket):
                 elif msg_type == "HUMAN_INPUT":
                     speaker = data.get("speaker", "H1")
                     text = data.get("text", "").strip()
-                    target = data.get("target")  # 🟢 EXTRAEMOS EL TARGET ('alex' o 'robin')
+                    target = data.get("target")
 
                     if not text:
                         continue
@@ -280,7 +290,6 @@ async def handler(websocket):
                         except Exception as e:
                             print(f"⚠️ Error enviando estado de procesamiento a {r_id}: {e}")
 
-                    # 🟢 PASAMOS EL TARGET A LA GENERACIÓN DEL PLAN
                     plan = await get_turn_plan(CURRENT_CONDITION, speaker, text, target_robot=target)
                     CURRENT_EXECUTION_TASK = asyncio.create_task(execute_turn_plan(plan))
 
