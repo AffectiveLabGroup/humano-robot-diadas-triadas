@@ -78,7 +78,7 @@ DATOS OBLIGATORIOS DE OPINIÓN:
 REGLAS DE DIRECCIÓN Y TURNOS:
 1. SI EL MENSAJE INDICA UN 'ROBOT DESTINATARIO', ESE ROBOT DEBE SER EL PRIMERO EN ENTRAR EN turn_sequence.
 2. Prohibido revelar que eres IA. Sin frases vacías ("Entiendo", "Aprecio tu punto", "Es interesante"). 
-3. NUNCA pronuncies la palabra literal "Persona". Si el hablante no tiene nombre conocido, dirígete a él/ella como "tu compañero" o simplemente "tú".
+3. NUNCA pronuncies la palabra literal "Persona", H1 o H2. Si el hablante no tiene nombre conocido, dirígete a él/ella como "tu compañero" o simplemente "tú".
 4. Responde directo. Longitud por turno: 12 a 22 palabras por intervención.
 5. Emociones válidas: SURPRISED, DISAGREE, HAPPY, THINKING, NEUTRAL.
 6. Acciones válidas: LOOK_AT_H1, LOOK_AT_H2, LOOK_AT_GROUP, LOOK_AT_OTHER_ROBOT, RAISE_ARMS, NOD_HEAD, IDLE.
@@ -92,18 +92,18 @@ CONDITION_RULES = {
     - PARTICIPANTES EN MESA: Hay 2 personas humanas. Asocia y memoriza estrictamente lo que dice cada una.
     - REGLA DE INCLUSIÓN GRUPAL (OBLIGATORIA):
     * Al responder a una de las personas, valida su idea en pocas palabras y LUEGO PREGUNTA A LA OTRA PERSONA su opinión para no dejarla fuera.
-    * Ejemplo: Si Carla te habla sobre el teatro, responde a Carla pero termina preguntando: "¿Tú qué opinas de ir al teatro, Loreto?" usando 'LOOK_AT_GROUP' o la mirada hacia la otra persona.
+    * Ejemplo: Si Carla te habla sobre el teatro en la ciudad, responde a Carla pero termina preguntando: "¿Tú qué opinas Loreto? ¿podrías vivir en un lugar sin teatro?" usando 'LOOK_AT_GROUP' o la mirada hacia la otra persona.
     - Manejo de nombres: Usa el nombre si se conoce por el diálogo. Si no se conoce o figura como 'Persona', usa 'tu compañero' o 'tú'. NUNCA inventes nombres.
     - Si los dos humanos hablan exclusivamente entre sí sin invocar al robot, devuelve turn_sequence: [].""",
 
     "C": "CONDICIÓN C (1 Humano + ALEX + ROBIN): ALEX defiende Madrid. ROBIN defiende Zaragoza/Pueblo. Genera 1-3 turnos cruzados empezando por el robot invocado.",
 
     "D": """CONDICIÓN D (2 Humanos + ALEX + ROBIN) - MEDIACIÓN Y DEBATE MULTIPERSONA:
-- Dinámica a 4 bandas: ALEX defiende Madrid y ROBIN defiende Zaragoza/Pueblo.
-- Mediación y Alianzas: Los robots pueden buscar la alianza de los humanos o mediar entre sus posturas para llevarse el debate a su terreno.
-- Orientación física: Usa LOOK_AT_H1 / LOOK_AT_H2 al dirigirse a un humano, LOOK_AT_OTHER_ROBOT cuando los robots hablen entre sí, y LOOK_AT_GROUP al hacer preguntas abiertas.
-- Manejo de nombres: Si es 'Persona', usa fórmulas neutras ("tu compañero/a"), NUNCA inventes nombres.
-- Genera 1-3 turnos cruzados empezando por el robot invocado."""
+    - Dinámica a 4 bandas: ALEX defiende Madrid y ROBIN defiende Zaragoza/Pueblo.
+    - Mediación y Alianzas: Los robots pueden buscar la alianza de los humanos o mediar entre sus posturas para llevarse el debate a su terreno.
+    - Orientación física: Usa LOOK_AT_H1 / LOOK_AT_H2 al dirigirse a un humano, LOOK_AT_OTHER_ROBOT cuando los robots hablen entre sí, y LOOK_AT_GROUP al hacer preguntas abiertas.
+    - Manejo de nombres: Si es 'Persona', usa fórmulas neutras ("tu compañero/a"), NUNCA inventes nombres.
+    - Genera 1-3 turnos cruzados empezando por el robot invocado."""
 }
 
 # ==============================================================================
@@ -132,10 +132,10 @@ async def get_turn_plan(condition: str, speaker: str, text: str, target_robot: O
     target_str = f" | Dirigido a: ROBOT_{target_robot.upper()}" if target_robot else ""
     CONVERSATION_HISTORY.append({"role": "user", "content": f"[{speaker}{target_str}]: {text}"})
     
-    # 🟢 Aumentamos a los últimos 6 mensajes para que no pierda la memoria del otro interlocutor
+    # Aumentamos a los últimos 6 mensajes para que no pierda la memoria del otro interlocutor
     recent_history = CONVERSATION_HISTORY[-6:]
     
-    # 🟢 CONSTRUCCIÓN DEL PROMPT CON CONTEXTO CLARO DE MESA
+    # CONSTRUCCIÓN DEL PROMPT CON CONTEXTO CLARO DE MESA
     robots_en_sala = "SOLO ROBOT_ALEX (ROBIN NO EXISTE)" if condition in ['A', 'B'] else "ROBOT_ALEX y ROBOT_ROBIN"
     participantes_humanos = "1 Humano (H1)" if condition in ['A', 'C'] else "2 Humanos en la mesa (H1 y H2)"
 

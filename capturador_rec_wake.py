@@ -120,7 +120,7 @@ def reconocer_hablante_desde_audio_data(audio_data: sr.AudioData) -> tuple[str, 
         max_similitud = 0.0
         
         # Umbral mínimo de certeza (75% de similitud)
-        UMBRAL_CERTEZA = 0.75 
+        UMBRAL_CERTEZA = 0.70 
 
         for nombre, firma_conocida in VOCES_CONOCIDAS.items():
             # Similitud del Coseno: 1.0 es idéntico, 0.0 es totalmente distinto
