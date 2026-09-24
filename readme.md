@@ -1,6 +1,6 @@
 # Documentación del Sistema: Orquestador y Capturador de Diálogo Robot-Humano
 
-Este proyecto es una plataforma de **interacción humano-robot en tiempo real** que coordina la conversación natural entre humanos y robots sociales (**Sanbot - ROBOT_ALEX y ROBOT_ROBIN**).
+Este proyecto es una plataforma de **interacción humano-robot en tiempo real** que coordina la conversación natural entre humanos y robots sociales (**Sanbot - ROBOT_LUMI y ROBOT_NOVA**).
 
 El sistema gestiona la captura de voz, la identificación del hablante por huella vocal, el filtrado de ruido/anti-eco y la generación de respuestas de diálogo contextuales y gestuales mediante Inteligencia Artificial.
 
@@ -19,7 +19,7 @@ El ecosistema se compone de **tres bloques principales**:
                                                                            ▼
                                                              ┌──────────────────────────────┐
                                                              │      Robots Sociales         │
-                                                             │  (ROBOT_ALEX / ROBOT_ROBIN)  │
+                                                             │  (ROBOT_LUMI / ROBOT_NOVA)  │
                                                              └──────────────────────────────┘
 
 ```
@@ -40,7 +40,7 @@ Es la "oreja" del sistema. Escucha en bucle el micrófono ambiental sin bloquear
 
 * **Audio mediante `sounddevice`**: Graba trozos de audio en bucle de forma nativa.
 * **Motor Biométrico (`Resemblyzer`)**: Carga en memoria una base de datos con las huellas vocales de los usuarios conocidos (`voices/`). Al capturar un audio, calcula la distancia euclidiana entre la voz actual y la base de datos para identificar el nombre de la persona (ej. *Paula, Loreto, Liany, Juan Jesús*) o etiquetarlo como *"Desconocido"*.
-* **Normalizador y Wake Word**: Convierte el texto a minúsculas, elimina acentos/tildes y valida si el texto contiene palabras clave como `"alex"`, `"alexa"`, `"robin"`, etc.
+* **Normalizador y Wake Word**: Convierte el texto a minúsculas, elimina acentos/tildes y valida si el texto contiene palabras clave como `"LUMI"`, `"LUMIa"`, `"NOVA"`, etc.
 * **Canal Anti-Eco WebSocket**: Se conecta al orquestador para recibir los mensajes `ROBOT_SPOKE`. Esto almacena las frases recientes del robot en una memoria temporal para evitar que el micrófono se auto-escuche y entre en un bucle infinito (se incluye en la versión de reconocimiento contínuo).
 
 ### Flujo de Trabajo del Capturador:
@@ -65,10 +65,10 @@ Administra la lógica de la conversación, controla las interrupciones en tiempo
 
 El servidor ajusta automáticamente el comportamiento del diálogo en función del escenario de pruebas activo:
 
-* **Condición A (1H + 1R)**: 1 Humano + `ROBOT_ALEX`.
-* **Condición B (2H + 1R)**: 2 Humanos + `ROBOT_ALEX`. Si los humanos hablan entre sí, el robot se mantiene en silencio.
-* **Condición C (1H + 2R)**: 1 Humano + `ROBOT_ALEX` + `ROBOT_ROBIN`.
-* **Condición D (2H + 2R)**: 2 Humanos + `ROBOT_ALEX` + `ROBOT_ROBIN`.
+* **Condición A (1H + 1R)**: 1 Humano + `ROBOT_LUMI`.
+* **Condición B (2H + 1R)**: 2 Humanos + `ROBOT_LUMI`. Si los humanos hablan entre sí, el robot se mantiene en silencio.
+* **Condición C (1H + 2R)**: 1 Humano + `ROBOT_LUMI` + `ROBOT_NOVA`.
+* **Condición D (2H + 2R)**: 2 Humanos + `ROBOT_LUMI` + `ROBOT_NOVA`.
 
 #### B. Generación de Turnos Optimizada (`get_turn_plan`)
 
@@ -83,7 +83,7 @@ Para minimizar la latencia y lograr que los robots respondan lo más rápido pos
   "addressed_to": "H1",
   "turn_sequence": [
     {
-      "speaker": "ROBOT_ALEX",
+      "speaker": "ROBOT_LUMI",
       "text": "Yo prefiero Madrid, los sueldos de dos mil cien euros compensan el alquiler.",
       "emotion": "HAPPY",
       "action": "LOOK_AT_H1",

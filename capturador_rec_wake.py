@@ -27,12 +27,12 @@ ROBOT_RECENT_TEXTS = []
 
 WAKE_WORDS_MAP = {
     "robots": ["robots", "robot"],
-    "alex": ["alex", "alexa", "ales", "robot alex"],
-    "robin": ["robin", "rovin", "robot robin"]
+    "lumi": ["lumi", "lumy", "robot lumi"],
+    "nova": ["nova", "novy", "robot nova"]
 }
 
 ATTENTION_WINDOW_SECONDS = 6.0  # Segundos que el robot se queda escuchando tras decir su nombre
-ACTIVE_TARGET = None            # Robot que está actualmente en estado "atento" ('alex' o 'robin')
+ACTIVE_TARGET = None            # Robot que está actualmente en estado "atento" ('lumi' o 'nova')
 LAST_WAKE_WORD_TIME = 0.0       # Marca de tiempo (timestamp) de cuando se dijo la wake word
 
 def normalizar_texto(texto: str) -> str:
@@ -148,7 +148,7 @@ def reconocer_hablante_desde_audio_data(audio_data: sr.AudioData) -> tuple[str, 
         return "Desconocido", 0.0
 
 def extraer_target_wake_word(text: str) -> str:
-    """Identifica si la frase contiene una wake word y retorna 'alex', 'robin' o 'robots'."""
+    """Identifica si la frase contiene una wake word y retorna 'lumi', 'nova' o 'robots'."""
     text_clean = normalizar_texto(text)
     
     for target_robot, aliases in WAKE_WORDS_MAP.items():
