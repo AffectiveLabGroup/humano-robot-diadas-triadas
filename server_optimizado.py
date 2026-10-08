@@ -24,7 +24,7 @@ client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 CONNECTED_ROBOTS: Dict[str, websockets.WebSocketServerProtocol] = {}
 CONNECTED_CAPTURERS: Set[websockets.WebSocketServerProtocol] = set()
 
-CURRENT_CONDITION = "B"  # 'A': 1H+1R, 'B': 2H+1R, 'C': 1H+2R, 'D': 2H+2R
+CURRENT_CONDITION = "A"  # 'A': 1H+1R, 'B': 2H+1R, 'C': 1H+2R, 'D': 2H+2R
 CURRENT_EXECUTION_TASK: Optional[asyncio.Task] = None
 
 # Memoria de conversación global
@@ -267,6 +267,15 @@ async def handler(websocket):
                     CONNECTED_CAPTURERS.add(websocket)
                     print("🔗 [CONEXIÓN] Capturador de audio registrado para filtro anti-eco.")
 
+                elif msg_type == "HUMAN_LISTENING_START":
+                    target = data.get("target")
+                    speaker = data.get("speaker", "Humano")
+                    print(f"👂 [ESTADO] Escuchando a {speaker}...")
+                    # Reenviamos la orden al Sanbot para que cambie la pantalla a modo "Escuchando"
+                    listening_msg = json.dumps({"type": "LISTENING", "speaker": speaker, "target": target})
+                    for r_id, r_ws in CONNECTED_ROBOTS.items():
+                        await r_ws.send(listening_msg)
+
                 elif msg_type == "HUMAN_INPUT":
                     speaker = data.get("speaker", "H1")
                     text = data.get("text", "").strip()
@@ -283,7 +292,7 @@ async def handler(websocket):
                         CURRENT_EXECUTION_TASK.cancel()
                         await stop_all_robots()
 
-                    processing_msg = json.dumps({"type": "PROCESSING"})
+                    processing_msg = json.dumps({"type": "PROCESSING", "target": target})
                     for r_id, r_ws in CONNECTED_ROBOTS.items():
                         try:
                             await r_ws.send(processing_msg)
