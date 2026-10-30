@@ -21,7 +21,7 @@ ROBOT_RECENT_TEXTS = []
 WAKE_WORDS_MAP = {
     "robots": ["robots", "robot"],
     "lumi": ["lumi", "lumy", "robot lumi"],
-    "nova": ["nova", "novy", "robot nova", "no va"]
+    "nori": ["nori", "nory", "robot nori", "no ri"]
 }
 
 def normalizar_texto(texto: str) -> str:
@@ -154,12 +154,12 @@ async def flujo_escucha_principal():
         print("🎛️ Calibrando micro...")
         recognizer.adjust_for_ambient_noise(source, duration=1)
 
-    print("\n[PASO 1] 👂 Esperando palabra clave (LUMI / NOVA)...")
+    print("\n[PASO 1] 👂 Esperando palabra clave (LUMI / nori)...")
 
     while True:
         try:
-            # 1. ESCUCHA DE WAKE WORD (Corte rápido de pausa)
-            recognizer.pause_threshold = 0.6
+            # 1. ESCUCHA DE WAKE WORD (Pausa optimizada pero segura)
+            recognizer.pause_threshold = 0.8
             with mic as source:
                 audio_ww = await asyncio.to_thread(
                     recognizer.listen, source, timeout=None, phrase_time_limit=3
@@ -187,7 +187,7 @@ async def flujo_escucha_principal():
 
                 # 3. ACTIVAR ESCUCHA DE LA ORDEN/PREGUNTA
                 print(f"🎤 [PASO 3] Robot en pantalla LISTENING. Escuchando la pregunta...")
-                recognizer.pause_threshold = 1.8  # Tiempo cómodo para decir la pregunta
+                recognizer.pause_threshold = 1.8  # Margen holgado para no cortar tus pausas al hablar
 
                 try:
                     with mic as source:
@@ -225,8 +225,12 @@ async def flujo_escucha_principal():
 
                 except (sr.WaitTimeoutError, sr.UnknownValueError):
                     print("⏱️ Tiempo de espera agotado sin pregunta. Volviendo a estado reposo...")
+                    await enviar_evento_servidor({
+                        "type": "HUMAN_LISTENING_TIMEOUT",
+                        "target": target_robot
+                    })
 
-                print("\n[PASO 1] 👂 Esperando palabra clave (LUMI / NOVA)...")
+                print("\n[PASO 1] 👂 Esperando palabra clave (LUMI / nori)...")
 
         except sr.UnknownValueError:
             pass
