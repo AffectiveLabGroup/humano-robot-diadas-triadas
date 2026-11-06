@@ -35,7 +35,7 @@ CONVERSATION_HISTORY: List[Dict[str, str]] = []
 # 2. ESQUEMAS PYDANTIC
 # ==============================================================================
 class Turn(BaseModel):
-    speaker: Literal["ROBOT_LUMI", "ROBOT_NORI", "NONE"] = Field(
+    speaker: Literal["ROBOT_DANI", "ROBOT_CRIS", "NONE"] = Field(
         description="Robot que debe ejecutar esta intervención."
     )
     text: str = Field(description="Texto exacto que el robot dirá mediante TTS (12-22 palabras).")
@@ -58,7 +58,7 @@ class Turn(BaseModel):
 
 class TurnPlan(BaseModel):
     condition: Literal["A", "B", "C", "D"]
-    addressed_to: Literal["H1", "H2", "GROUP", "ROBOT_LUMI", "ROBOT_NORI"]
+    addressed_to: Literal["H1", "H2", "GROUP", "ROBOT_DANI", "ROBOT_CRIS"]
     turn_sequence: List[Turn]
     requires_human_input: bool
 
@@ -67,7 +67,7 @@ class TurnPlan(BaseModel):
 # 3. PROMPT DEL SISTEMA Y REGLAS DE CONDICIONES
 # ==============================================================================
 BASE_SYSTEM_PROMPT = """
-Eres el Orquestador de Diálogo para dos robots sociales (ROBOT_LUMI y ROBOT_NORI).
+Eres el Orquestador de Diálogo para dos robots sociales (ROBOT_DANI y ROBOT_CRIS).
 Tu objetivo es gestionar una conversación CASUAL, NATURAL y MODERADA para decidir la ubicación ideal para vivir (Madrid, Zaragoza o Pueblo).
 
 DATOS OBLIGATORIOS DE OPINIÓN:
@@ -78,31 +78,31 @@ DATOS OBLIGATORIOS DE OPINIÓN:
 REGLAS DE DIRECCIÓN Y TURNOS:
 1. SI EL MENSAJE INDICA UN 'ROBOT DESTINATARIO', ESE ROBOT DEBE SER EL PRIMERO EN ENTRAR EN turn_sequence.
 2. Prohibido revelar que eres IA. Sin frases vacías ("Entiendo", "Aprecio tu punto", "Es interesante"). 
-3. NUNCA pronuncies la palabra literal "Persona", H1 o H2. Si el hablante no tiene nombre conocido, dirígete a él/ella como simplemente "tú".
-4. Responde directo. Longitud por turno: 12 a 22 palabras por intervención.
+3. NUNCA pronuncies las palabras literales "Persona", "H1" o "H2". Si el hablante no tiene nombre conocido, dirígete a él/ella como simplemente "tú", o incluye frases estilo "¿Qué opinas sobre lo que ha dicho?".
+4. Responde directo. Longitud por turno: 22 a 32 palabras por intervención.
 5. Emociones válidas: SURPRISED, DISAGREE, HAPPY, THINKING, NEUTRAL.
 6. Acciones válidas: LOOK_AT_H1, LOOK_AT_H2, LOOK_AT_GROUP, LOOK_AT_OTHER_ROBOT, RAISE_ARMS, NOD_HEAD, IDLE.
 """
 
 CONDITION_RULES = {
-    "A": "CONDICIÓN A (1 Humano + ROBOT_LUMI): Habla solo ROBOT_LUMI. PERFIL: Pragmático.",
+    "A": "CONDICIÓN A (1 Humano + ROBOT_DANI): Habla solo ROBOT_DANI. PERFIL: Pragmático.",
 
-    "B": """CONDICIÓN B (2 Humanos + ROBOT_LUMI) - MODERACIÓN SOCIAL:
-    - EN ESTA CONDICIÓN SOLO EXISTE ROBOT_LUMI. PROHIBIDO NOMBRAR O USAR A NORI.
+    "B": """CONDICIÓN B (2 Humanos + ROBOT_DANI) - MODERACIÓN SOCIAL:
+    - EN ESTA CONDICIÓN SOLO EXISTE ROBOT_DANI. PROHIBIDO NOMBRAR O USAR A CRIS.
     - PARTICIPANTES EN MESA: Hay 2 personas humanas. Asocia y memoriza estrictamente lo que dice cada una.
     - REGLA DE INCLUSIÓN GRUPAL (OBLIGATORIA):
-    * Al responder a una de las personas, valida su idea en pocas palabras y LUEGO PREGUNTA A LA OTRA PERSONA su opinión para no dejarla fuera.
-    * Ejemplo: Si Carla te habla sobre el teatro en la ciudad, responde a Carla pero termina preguntando: "¿Tú qué opinas Loreto? ¿podrías vivir en un lugar sin teatro?" usando 'LOOK_AT_GROUP' o la mirada hacia la otra persona.
-    - Manejo de nombres: Usa el nombre si se conoce por el diálogo. Si no se conoce o figura como 'Persona', usa 'tu compañero' o 'tú'. NUNCA inventes nombres.
+    * Al responder a una de las personas, valida su idea en pocas palabras, genera diálogo y LUEGO PREGUNTA A LA OTRA PERSONA su opinión para no dejarla fuera.
+    * Ejemplo: Si Carla te habla sobre el teatro en la ciudad, responde a Carla pero termina preguntando: "¿Tú qué opinas Loreto? ¿Que opinas sobre lo que dijo Carla? ¿podrías vivir en un lugar sin teatro?" usando 'LOOK_AT_GROUP' o la mirada hacia la otra persona.
+    - Manejo de nombres: Usa el nombre si se conoce por el diálogo. Si no se conoce o figura como 'Persona', 'H1' o 'H2', usa 'tu compañero' o 'tú'. NUNCA inventes nombres.
     - Si los dos humanos hablan exclusivamente entre sí sin invocar al robot, devuelve turn_sequence: [].""",
 
-    "C": "CONDICIÓN C (1 Humano + LUMI + NORI): LUMI defiende Madrid. NORI defiende Zaragoza/Pueblo. Genera 1-3 turnos cruzados empezando por el robot invocado.",
+    "C": "CONDICIÓN C (1 Humano + DANI + CRIS): DANI defiende Madrid. CRIS defiende Zaragoza/Pueblo. Genera 1-3 turnos cruzados empezando por el robot invocado.",
 
-    "D": """CONDICIÓN D (2 Humanos + LUMI + NORI) - MEDIACIÓN Y DEBATE MULTIPERSONA:
-    - Dinámica a 4 bandas: LUMI defiende Madrid y NORI defiende Zaragoza/Pueblo.
+    "D": """CONDICIÓN D (2 Humanos + DANI + CRIS) - MEDIACIÓN Y DEBATE MULTIPERSONA:
+    - Dinámica a 4 bandas: DANI defiende Madrid y CRIS defiende Zaragoza/Pueblo.
     - Mediación y Alianzas: Los robots pueden buscar la alianza de los humanos o mediar entre sus posturas para llevarse el debate a su terreno.
     - Orientación física: Usa LOOK_AT_H1 / LOOK_AT_H2 al dirigirse a un humano, LOOK_AT_OTHER_ROBOT cuando los robots hablen entre sí, y LOOK_AT_GROUP al hacer preguntas abiertas.
-    - Manejo de nombres: Si es 'Persona', usa fórmulas neutras ("tu compañero/a"), NUNCA inventes nombres.
+    - Manejo de nombres: Si es 'Persona', 'H1' o 'H2', usa fórmulas neutras ("tu compañero/a"), NUNCA inventes nombres.
     - Genera 1-3 turnos cruzados empezando por el robot invocado."""
 }
 
@@ -136,7 +136,7 @@ async def get_turn_plan(condition: str, speaker: str, text: str, target_robot: O
     recent_history = CONVERSATION_HISTORY[-6:]
     
     # CONSTRUCCIÓN DEL PROMPT CON CONTEXTO CLARO DE MESA
-    robots_en_sala = "SOLO ROBOT_LUMI (NORI NO EXISTE)" if condition in ['A', 'B'] else "ROBOT_LUMI y ROBOT_NORI"
+    robots_en_sala = "SOLO ROBOT_DANI (CRIS NO EXISTE)" if condition in ['A', 'B'] else "ROBOT_DANI y ROBOT_CRIS"
     participantes_humanos = "1 Humano (H1)" if condition in ['A', 'C'] else "2 Humanos en la mesa (H1 y H2)"
 
     system_content = f"""{BASE_SYSTEM_PROMPT}
@@ -209,7 +209,7 @@ async def execute_turn_plan(plan: TurnPlan):
 
                 action_to_send = step.action
                 if step.action == "LOOK_AT_OTHER_ROBOT":
-                    action_to_send = "LOOK_AT_NORI" if target_robot == "ROBOT_LUMI" else "LOOK_AT_LUMI"
+                    action_to_send = "LOOK_AT_CRIS" if target_robot == "ROBOT_DANI" else "LOOK_AT_DANI"
 
                 payload = {
                     "type": "EXECUTE_TURN",

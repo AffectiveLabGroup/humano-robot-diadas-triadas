@@ -2,12 +2,12 @@
 Capturador de audio con STT LOCAL en streaming (Vosk) + Whisper opcional.
 
 Idea clave: Vosk va emitiendo resultados PARCIALES mientras el usuario habla.
-En cuanto aparece "lumi" / "nori" en un parcial se envía HUMAN_LISTENING_START,
+En cuanto aparece "dani" / "cris" en un parcial se envía HUMAN_LISTENING_START,
 sin esperar a que termine la frase ni hacer ninguna petición de red.
 
 Flujo:
-  - "Lumi, yo opino que..." (>= 3 palabras tras el nombre) -> HUMAN_INPUT directo.
-  - Solo "Lumi" -> pantalla de escucha y se espera la pregunta (6 s).
+  - "dani, yo opino que..." (>= 3 palabras tras el nombre) -> HUMAN_INPUT directo.
+  - Solo "dani" -> pantalla de escucha y se espera la pregunta (6 s).
   - Si el parcial era un falso positivo -> HUMAN_LISTENING_TIMEOUT.
 
 Variables de entorno (.env):
@@ -51,15 +51,14 @@ SAMPLE_RATE = 16000
 BLOCK_MS = 100
 BLOCK_SIZE = SAMPLE_RATE * BLOCK_MS // 1000          # 1600 muestras
 MAX_BUFFER = SAMPLE_RATE * 2 * 40                    # 40 s de audio int16
-ESPERA_PREGUNTA_S = 6.0                              # tras decir solo "Lumi"
+ESPERA_PREGUNTA_S = 6.0                              # tras decir solo "dani"
 ESPERA_MIENTRAS_HABLA_S = 10.0                       # si está hablando, no cortar
 
 ROBOT_RECENT_TEXTS = []
 WAKE_WORDS_MAP = {
     "robots": ["robots", "robot"],
-    #"lumi": ["lumi", "lumy", "robot lumi", "lu mi", "lu my", "lomi", "lo my", "lo mi"],
-    "lumi": ["dani"],
-    "nori": ["nori", "nory", "robot nori", "no ri"],
+    "dani": ["dani", "Dani", "robot dani"],
+    "cris": ["cris", "Cris", "robot cris"],
 }
 
 
@@ -86,8 +85,8 @@ def es_eco_del_robot(texto_capturado: str) -> bool:
 
 
 def separar_wake_word(texto: str):
-    """Devuelve (target, resto). Comprueba lumi/nori antes que el genérico 'robots'."""
-    for target in ("lumi", "nori", "robots"):
+    """Devuelve (target, resto). Comprueba dani/cris antes que el genérico 'robots'."""
+    for target in ("dani", "cris", "robots"):
         for alias in sorted(WAKE_WORDS_MAP[target], key=len, reverse=True):
             m = re.search(rf"\b{re.escape(alias)}\b[\s,.:;!?¡¿-]*", texto, flags=re.IGNORECASE)
             if m:
@@ -299,7 +298,7 @@ async def manejar_final(s: Sesion, texto: str, audio: bytes, t_final: float):
             await cancelar_aviso(s)
             return
 
-        # CASO 1: "Lumi, yo opino que..." -> directo, sin esperar otra frase
+        # CASO 1: "dani, yo opino que..." -> directo, sin esperar otra frase
         if len(resto.split()) >= 3:
             txt, speaker, certeza = await procesar_frase(audio, texto)
             t2, resto2 = separar_wake_word(txt)
@@ -362,7 +361,7 @@ async def flujo_escucha_principal():
 
     with sd.RawInputStream(samplerate=SAMPLE_RATE, blocksize=BLOCK_SIZE, dtype="int16",
                            channels=1, device=dispositivo, callback=callback):
-        print("\n[PASO 1] 👂 Esperando palabra clave (LUMI / nori)...")
+        print("\n[PASO 1] 👂 Esperando palabra clave (dani / cris)...")
         while True:
             try:
                 data = await cola.get()
@@ -387,7 +386,7 @@ async def flujo_escucha_principal():
                     rec.Reset()
                     buffer.clear()
                     s.reiniciar()
-                    print("\n[PASO 1] 👂 Esperando palabra clave (LUMI / nori)...")
+                    print("\n[PASO 1] 👂 Esperando palabra clave (dani / cris)...")
 
             except Exception as e:
                 print(f"⚠️ {e}")
