@@ -2,7 +2,7 @@
 Capturador de audio con STT LOCAL en streaming (Vosk) + Whisper opcional.
 
 Idea clave: Vosk va emitiendo resultados PARCIALES mientras el usuario habla.
-En cuanto aparece "dani" / "cris" en un parcial se envía HUMAN_LISTENING_START,
+En cuanto aparece "dani" / "gabi" en un parcial se envía HUMAN_LISTENING_START,
 sin esperar a que termine la frase ni hacer ninguna petición de red.
 
 Flujo:
@@ -45,7 +45,7 @@ SERVER_URI = os.getenv("WEBSOCKET_URI", "ws://localhost:8765")
 VOSK_MODEL_PATH = os.getenv("VOSK_MODEL_PATH", "models/vosk-model-small-es-0.42")
 VOSK_FIN_SILENCIO = float(os.getenv("VOSK_FIN_SILENCIO", "1.2"))
 VOSK_MAX_FRASE = float(os.getenv("VOSK_MAX_FRASE", "30"))
-DEBUG = os.getenv("DEBUG_STT", "0") == "1"
+DEBUG = os.getenv("DEBUG_STT", "1") == "1"
 
 SAMPLE_RATE = 16000
 BLOCK_MS = 100
@@ -58,7 +58,7 @@ ROBOT_RECENT_TEXTS = []
 WAKE_WORDS_MAP = {
     "robots": ["robots", "robot"],
     "dani": ["dani", "Dani", "robot dani"],
-    "cris": ["cris", "Cris", "robot cris"],
+    "gabi": ["gabi", "Gabi", "robot gabi", "gaby", "Gaby", "robot gaby"],
 }
 
 
@@ -85,8 +85,8 @@ def es_eco_del_robot(texto_capturado: str) -> bool:
 
 
 def separar_wake_word(texto: str):
-    """Devuelve (target, resto). Comprueba dani/cris antes que el genérico 'robots'."""
-    for target in ("dani", "cris", "robots"):
+    """Devuelve (target, resto). Comprueba dani/gabi antes que el genérico 'robots'."""
+    for target in ("dani", "gabi", "robots"):
         for alias in sorted(WAKE_WORDS_MAP[target], key=len, reverse=True):
             m = re.search(rf"\b{re.escape(alias)}\b[\s,.:;!?¡¿-]*", texto, flags=re.IGNORECASE)
             if m:
@@ -361,7 +361,7 @@ async def flujo_escucha_principal():
 
     with sd.RawInputStream(samplerate=SAMPLE_RATE, blocksize=BLOCK_SIZE, dtype="int16",
                            channels=1, device=dispositivo, callback=callback):
-        print("\n[PASO 1] 👂 Esperando palabra clave (dani / cris)...")
+        print("\n[PASO 1] 👂 Esperando palabra clave (dani / gabi)...")
         while True:
             try:
                 data = await cola.get()
@@ -386,7 +386,7 @@ async def flujo_escucha_principal():
                     rec.Reset()
                     buffer.clear()
                     s.reiniciar()
-                    print("\n[PASO 1] 👂 Esperando palabra clave (dani / cris)...")
+                    print("\n[PASO 1] 👂 Esperando palabra clave (dani / gabi)...")
 
             except Exception as e:
                 print(f"⚠️ {e}")
