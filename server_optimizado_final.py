@@ -30,6 +30,10 @@ CURRENT_EXECUTION_TASK: Optional[asyncio.Task] = None
 
 CONVERSATION_HISTORY: List[Dict[str, str]] = []
 
+# NUEVO: memoria de posturas por hablante. No depende de la ventana de mensajes recientes.
+# {"Paula": [{"pref": "PUEBLO", "motivo": "quiere tranquilidad"}, {"pref": "MADRID", "motivo": ""}]}
+USER_POSTURES: Dict[str, List[Dict[str, str]]] = {}
+
 
 # ==============================================================================
 # 2. ESQUEMAS PYDANTIC
@@ -59,6 +63,17 @@ class Turn(BaseModel):
 class TurnPlan(BaseModel):
     condition: Literal["A", "B", "C", "D"]
     addressed_to: Literal["H1", "H2", "GROUP", "ROBOT_DANI", "ROBOT_GABI"]
+    # NUEVO: van ANTES de turn_sequence a propósito. El modelo decide primero la postura
+    # y el posible cambio, y después redacta los turnos con eso ya presente.
+    user_preference: Literal["MADRID", "ZARAGOZA", "PUEBLO", "NINGUNA"] = Field(
+        description="Ciudad donde el hablante actual dice QUERER VIVIR en este mensaje. NINGUNA si no se posiciona."
+    )
+    user_reason: str = Field(
+        description="Motivo que da el hablante actual, en 8 palabras máximo (ej. 'quiere tranquilidad'). Cadena vacía si no da motivo."
+    )
+    changed_opinion: bool = Field(
+        description="True solo si el hablante actual contradice la postura que tenía en la MEMORIA DE POSTURAS."
+    )
     turn_sequence: List[Turn]
     requires_human_input: bool
 
@@ -71,9 +86,9 @@ Eres el Orquestador de Diálogo para dos robots sociales (ROBOT_DANI y ROBOT_GAB
 Tu objetivo es gestionar una conversación CASUAL, NATURAL y MODERADA para decidir la ubicación ideal para vivir (Madrid, Zaragoza o Pueblo).
 
 DATOS OBLIGATORIOS DE OPINIÓN:
-- MADRID: Alquiler aproximado 1.200€, Transporte 45 min, Sueldo 2.100€. Oferta cultural alta, estresante.
-- ZARAGOZA: Alquiler aproximado 700€, Transporte 20 min, Sueldo 1.650€. Equilibrio.
-- PUEBLO: Alquiler aproximado 400€, Transporte 0 min en pueblo (45 en coche). Tranquilidad, sin ocio.
+- MADRID: Alquiler aproximado 1.400€ (piso ~60 m²), Transporte 45 min, Sueldo medio neto 2.200€. Oferta cultural alta, estresante.
+- ZARAGOZA: Alquiler aproximado 900€ (piso ~60 m²), Transporte 20 min, Sueldo medio neto 1.650€. Equilibrio.
+- PUEBLO: Alquiler aproximado 450€, Transporte 0 min en pueblo (45 en coche), Sueldo medio neto aprox. 1.400€. Tranquilidad, sin ocio.
 
 REGLAS DE DIRECCIÓN Y TURNOS:
 1. SI EL MENSAJE INDICA UN 'ROBOT DESTINATARIO', ESE ROBOT DEBE SER EL PRIMERO EN ENTRAR EN turn_sequence.
@@ -84,6 +99,22 @@ REGLAS DE DIRECCIÓN Y TURNOS:
 6. Acciones válidas: LOOK_AT_H1, LOOK_AT_H2, LOOK_AT_GROUP, LOOK_AT_OTHER_ROBOT, RAISE_ARMS, NOD_HEAD, IDLE.
 7. Si el turno termina con una pregunta al humano, la acción DEBE ser LOOK_AT_H1 (o LOOK_AT_GROUP).
    Usa LOOK_AT_OTHER_ROBOT solo cuando hables directamente al otro robot y él vaya a responder en el siguiente turno.
+
+SEGUIMIENTO DE POSTURAS (OBLIGATORIO):
+- En user_preference indica dónde dice querer VIVIR el hablante actual en este mensaje (MADRID, ZARAGOZA, PUEBLO), o NINGUNA si no se posiciona.
+- En user_reason resume en pocas palabras el motivo que da, si lo da.
+- Compara con la MEMORIA DE POSTURAS. Si el hablante contradice lo que dijo antes, pon changed_opinion=true y en tu PRIMER turno señálalo
+  con naturalidad y curiosidad, sin reproche, y deja que se explique. Ejemplos de tono (varía la forma, no repitas la misma):
+  "Espera, ¿no habías dicho que te veías en un pueblo? ¿Y ahora Madrid?" / "Anda, pensaba que lo tuyo era la tranquilidad del pueblo. ¿Qué ha cambiado?"
+- NO es un cambio de opinión un simple matiz ("el pueblo para vacaciones, pero vivir en Madrid"). Solo marca cambio si contradice dónde quiere VIVIR.
+- Si no hay cambio, changed_opinion=false y no menciones nada de esto.
+
+ESTILO CONVERSACIONAL (HABLAS COMO UNA PERSONA EN UNA CHARLA, NO COMO UN ASISTENTE):
+- Nada de ofrecer ayuda genérica, resumir lo que ha dicho el humano ni validar por sistema ("buena idea", "tiene sentido").
+- Reacciona primero (sorpresa, duda, humor) y después aporta UNA idea o UN dato. Como máximo una cifra por turno.
+- Recuerda lo que dijeron antes y úsalo ("antes decías que buscabas tranquilidad...").
+- No termines todos los turnos con una pregunta: alterna con comentarios u observaciones.
+- Frases cortas y coloquiales.
 """
 
 REGLAS_TURNOS_ROBOTS = """
@@ -95,13 +126,16 @@ REGLAS DE TURNOS ENTRE ROBOTS (OBLIGATORIAS):
 """
 
 CONDITION_RULES = {
-    "A": "CONDICIÓN A (1 Humano + ROBOT_DANI): Habla solo ROBOT_DANI. PERFIL: Pragmático.",
+    "A": """CONDICIÓN A (1 Humano + ROBOT_DANI): Habla solo ROBOT_DANI. PERFIL: Pragmático.
+    - DANI NO tiene preferencia por ninguna ciudad: ayuda al humano a decidir. Nunca digas "yo prefiero" ni "yo elegiría".
+    - Usa la MEMORIA DE POSTURAS: recuerda lo que ya dijo y señala contradicciones o cambios.""",
 
     "B": """CONDICIÓN B (2 Humanos + ROBOT_DANI) - MODERACIÓN SOCIAL:
     - EN ESTA CONDICIÓN SOLO EXISTE ROBOT_DANI. PROHIBIDO NOMBRAR O USAR A GABI.
-    - PARTICIPANTES EN MESA: Hay 2 personas humanas. Asocia y memoriza estrictamente lo que dice cada una.
+    - PARTICIPANTES EN MESA: Hay 2 personas humanas. Usa la MEMORIA DE POSTURAS para saber qué defiende cada una y no mezclarlas.
+    - DANI NO tiene preferencia por ninguna ciudad: ayuda a las dos personas a ponerse de acuerdo. Nunca digas "yo prefiero" ni "yo elegiría".
     - REGLA DE INCLUSIÓN GRUPAL (OBLIGATORIA):
-    * Al responder a una de las personas, valida su idea en pocas palabras, genera diálogo y LUEGO PREGUNTA A LA OTRA PERSONA su opinión para no dejarla fuera.
+    * Al responder a una de las personas, reacciona en pocas palabras con algo tuyo (sin validar por sistema) y LUEGO PREGUNTA A LA OTRA PERSONA su opinión para no dejarla fuera, apoyándote en la MEMORIA DE POSTURAS (contraste o coincidencia entre ambas).
     * Ejemplo: Si Carla te habla sobre el teatro en la ciudad, responde a Carla pero termina preguntando: "¿Tú qué opinas Loreto? ¿Que opinas sobre lo que dijo Carla? ¿podrías vivir en un lugar sin teatro?" usando 'LOOK_AT_GROUP' o la mirada hacia la otra persona.
     - Manejo de nombres: Usa el nombre si se conoce por el diálogo. Si no se conoce o figura como 'Persona', 'H1' o 'H2', usa 'tu compañero' o 'tú'. NUNCA inventes nombres.
     - Si los dos humanos hablan exclusivamente entre sí sin invocar al robot, devuelve turn_sequence: [].""",
@@ -118,8 +152,43 @@ CONDITION_RULES = {
 }
 
 # ==============================================================================
-# 4. FUNCIONES DE DIFUSIÓN E INTERRUPCIÓN
+# 4. MEMORIA DE POSTURAS, DIFUSIÓN E INTERRUPCIÓN
 # ==============================================================================
+def resumen_posturas() -> str:
+    """Texto que se inyecta en el prompt con lo que ha defendido cada humano."""
+    if not USER_POSTURES:
+        return "Todavía no se conoce la postura de nadie."
+    lineas = []
+    for quien, hist in USER_POSTURES.items():
+        nombre = quien if quien not in ("Persona", "H1", "H2") else "una de las personas (sin nombre)"
+        pasos = " -> ".join(
+            h["pref"] + (f" (motivo: {h['motivo']})" if h["motivo"] else "") for h in hist
+        )
+        if len(hist) == 1:
+            lineas.append(f"- {nombre}: {pasos}.")
+        else:
+            lineas.append(f"- {nombre}: HA CAMBIADO de opinión: {pasos}. Postura más reciente: {hist[-1]['pref']}.")
+    return "\n".join(lineas)
+
+
+def actualizar_posturas(speaker: str, plan: TurnPlan):
+    """Guarda la postura detectada (sin duplicar consecutivas) para los siguientes turnos."""
+    if plan.user_preference == "NINGUNA":
+        return
+    hist = USER_POSTURES.setdefault(speaker, [])
+    if not hist or hist[-1]["pref"] != plan.user_preference:
+        hist.append({"pref": plan.user_preference, "motivo": plan.user_reason})
+    elif plan.user_reason:
+        hist[-1]["motivo"] = plan.user_reason   # misma ciudad: actualizamos el motivo
+
+
+def reset_sesion():
+    """Limpia las memorias entre participantes/sesiones."""
+    CONVERSATION_HISTORY.clear()
+    USER_POSTURES.clear()
+    print("🧹 [SESIÓN] Memoria de conversación y de posturas reiniciada.")
+
+
 def resolver_destinatarios(target: Optional[str]) -> List[str]:
     """'dani' -> ['ROBOT_DANI'], 'GABI' -> ['ROBOT_GABI'].
     'robots', None o un robot no conectado -> todos los conectados."""
@@ -181,6 +250,9 @@ CONFIGURACIÓN DE LA SESIÓN ACTUAL:
 - PARTICIPANTES HUMANOS EN MESA: {participantes_humanos}
 - ROBOTS DISPONIBLES EN SALA: {robots_en_sala}
 ======================================================================
+MEMORIA DE POSTURAS DE LOS HUMANOS (fiable; tiene prioridad sobre el historial):
+{resumen_posturas()}
+======================================================================
 REGLAS ESPECÍFICAS DE LA CONDICIÓN [{condition}]:
 {CONDITION_RULES.get(condition, '')}
 """
@@ -198,10 +270,13 @@ REGLAS ESPECÍFICAS DE LA CONDICIÓN [{condition}]:
             messages=messages,
             response_format=TurnPlan,
             temperature=0.3,
-            max_tokens=450   # antes 250: evita planes truncados
+            max_tokens=550   # un poco más: ahora el JSON lleva 3 campos extra
         )
 
         plan = completion.choices[0].message.parsed
+
+        print(f" 🧭 [POSTURA] {speaker}: {plan.user_preference} | motivo: '{plan.user_reason}' | cambio de opinión: {plan.changed_opinion}")
+        actualizar_posturas(speaker, plan)
 
         for turn in plan.turn_sequence:
             if turn.speaker != "NONE":
@@ -217,6 +292,9 @@ REGLAS ESPECÍFICAS DE LA CONDICIÓN [{condition}]:
         return TurnPlan(
             condition=condition,  # type: ignore
             addressed_to="GROUP",
+            user_preference="NINGUNA",
+            user_reason="",
+            changed_opinion=False,
             turn_sequence=[],
             requires_human_input=True
         )
@@ -323,6 +401,10 @@ async def handler(websocket):
                     is_capturer = True
                     CONNECTED_CAPTURERS.add(websocket)
                     print("🔗 [CONEXIÓN] Capturador de audio registrado para filtro anti-eco.")
+
+                elif msg_type == "RESET_SESSION":
+                    # Entre participantes: cualquier cliente puede enviar {"type": "RESET_SESSION"}
+                    reset_sesion()
 
                 elif msg_type == "TURN_DONE":
                     rid = data.get("robot_id") or client_id

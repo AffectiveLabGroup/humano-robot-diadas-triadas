@@ -116,8 +116,8 @@ def cargar_voces_conocidas():
         "Paula": ["voices/paula_ref2.wav", "voices/paula_ref3.wav", "voices/paula_ref4.wav"],
         "Loreto": ["voices/loreto_ref.wav", "voices/loreto_ref2.wav", "voices/loreto_ref3.wav", "voices/loreto_ref4.wav"],
         "Liany": ["voices/liany_ref.wav", "voices/liany_ref2.wav", "voices/liany_ref3.wav", "voices/liany_ref4.wav"],
-        "Juan Jesus": ["voices/juanje_ref.wav", "voices/juanje_ref2.wav", "voices/juanje_ref3.wav", "voices/juanje_ref4.wav"],
-        "Eva": ["voices/eva_ref.wav", "voices/eva_ref2.wav", "voices/eva_ref3.wav", "voices/eva_ref4.wav"],
+        "Alex": ["voices/alex_ref.wav"],
+        "Agustin": ["voices/agustin_ref.wav"],
     }
     voces_db = {}
     for nombre, rutas in voces_config.items():
