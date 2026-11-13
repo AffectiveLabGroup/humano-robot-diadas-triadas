@@ -69,10 +69,10 @@ def main():
         print(f"🎙️  Grabando {segundos} s → habla ahora...")
         audio = sd.rec(int(segundos * SAMPLE_RATE), samplerate=SAMPLE_RATE,
                        channels=1, dtype="int16", device=device)
-        sd.wait()
-        print("⏹️  Grabación terminada. Reproduciendo para que la compruebes...")
-        sd.play(audio, SAMPLE_RATE)
-        sd.wait()
+        #sd.wait()
+        #print("⏹️  Grabación terminada. Reproduciendo para que la compruebes...")
+        #sd.play(audio, SAMPLE_RATE)
+        #sd.wait()
 
         if input("¿Guardar esta muestra? (s/n): ").strip().lower() == "s":
             sf.write(ruta, audio, SAMPLE_RATE, subtype="PCM_16")
