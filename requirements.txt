@@ -1,0 +1,30 @@
+# ============================================================
+# Dependencias del proyecto (servidor + capturador + grabador)
+# Python recomendado: 3.11 (vale 3.10 - 3.12; NO usar 3.13 en Windows por PyAudio)
+#
+# Instalación (en este orden):
+#   pip install -r requirements.txt
+#   pip install resemblyzer==0.1.4 --no-deps
+# ============================================================
+
+# --- Servidor orquestador (servidor.py) ---
+websockets>=12.0,<14        # el código usa websockets.WebSocketServerProtocol (API clásica)
+openai>=1.40.0,<2           # client.beta.chat.completions.parse (salidas estructuradas)
+pydantic>=2.7,<3
+python-dotenv>=1.0
+
+# --- Capturador de audio (capturador.py) ---
+SpeechRecognition>=3.10,<4
+PyAudio>=0.2.14             # necesario para sr.Microphone
+numpy>=2.0,<2.3             # Resemblyzer usa np.bool, que no existe en numpy 1.24-1.26
+scipy>=1.10
+soundfile>=0.12
+librosa>=0.10,<0.11         # con librosa 0.11+ Resemblyzer falla al remuestrear
+torch>=2.0                  # lo usa Resemblyzer (en Windows pip instala la versión CPU)
+webrtcvad-wheels>=2.0.10    # sustituye a webrtcvad, que en Windows exige compilar
+
+# --- Grabador de muestras de voz (grabar_voz.py) ---
+sounddevice>=0.4.6
+
+# Resemblyzer NO va aquí a propósito: depende de 'webrtcvad' y pip intentaría compilarlo.
+# Se instala aparte con: pip install resemblyzer==0.1.4 --no-deps
