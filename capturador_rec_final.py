@@ -45,7 +45,7 @@ SERVER_URI = os.getenv("WEBSOCKET_URI", "ws://localhost:8765")
 VOSK_MODEL_PATH = os.getenv("VOSK_MODEL_PATH", "models/vosk-model-small-es-0.42")
 VOSK_FIN_SILENCIO = float(os.getenv("VOSK_FIN_SILENCIO", "1.2"))
 VOSK_MAX_FRASE = float(os.getenv("VOSK_MAX_FRASE", "30"))
-DEBUG = os.getenv("DEBUG_STT", "1") == "1"
+DEBUG = os.getenv("DEBUG_STT", "1") == "0"
 
 SAMPLE_RATE = 16000
 BLOCK_MS = 100

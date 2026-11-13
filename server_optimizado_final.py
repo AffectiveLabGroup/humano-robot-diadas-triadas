@@ -25,14 +25,27 @@ CONNECTED_CAPTURERS: Set[websockets.WebSocketServerProtocol] = set()
 # Un evento por robot: el robot lo activa (TURN_DONE) cuando termina de hablar
 TURN_DONE_EVENTS: Dict[str, asyncio.Event] = {}
 
-CURRENT_CONDITION = "A"  # 'A': 1H+1R, 'B': 2H+1R, 'C': 1H+2R, 'D': 2H+2R
+CURRENT_CONDITION = "B"  # 'A': 1H+1R, 'B': 2H+1R, 'C': 1H+2R, 'D': 2H+2R
 CURRENT_EXECUTION_TASK: Optional[asyncio.Task] = None
 
 CONVERSATION_HISTORY: List[Dict[str, str]] = []
 
-# NUEVO: memoria de posturas por hablante. No depende de la ventana de mensajes recientes.
+# Memoria de posturas por hablante. No depende de la ventana de mensajes recientes.
 # {"Paula": [{"pref": "PUEBLO", "motivo": "quiere tranquilidad"}, {"pref": "MADRID", "motivo": ""}]}
 USER_POSTURES: Dict[str, List[Dict[str, str]]] = {}
+
+# NUEVO: etiquetas de hablante vistas en la sesión y etiquetas que NO identifican a nadie.
+SPEAKERS_VISTOS: Set[str] = set()
+GENERIC_SPEAKERS = {"", "Persona", "Humano", "Desconocido", "Unknown"}
+
+
+def identidad_fiable(condition: str) -> bool:
+    """Solo atribuimos opiniones a alguien si sabemos distinguir a las dos personas.
+    En B/D hace falta haber visto dos etiquetas distintas y no genéricas."""
+    reales = {s for s in SPEAKERS_VISTOS if s not in GENERIC_SPEAKERS}
+    if condition in ("B", "D"):
+        return len(reales) >= 2
+    return len(reales) >= 1
 
 
 # ==============================================================================
@@ -42,7 +55,7 @@ class Turn(BaseModel):
     speaker: Literal["ROBOT_DANI", "ROBOT_GABI", "NONE"] = Field(
         description="Robot que debe ejecutar esta intervención."
     )
-    text: str = Field(description="Texto exacto que el robot dirá mediante TTS (22-32 palabras).")
+    text: str = Field(description="Texto exacto que el robot dirá mediante TTS (22-32 palabras; hasta 38 si pregunta a la otra persona).")
 
     emotion: Literal["NEUTRAL", "HAPPY", "SURPRISED", "THINKING", "DISAGREE"] = Field(
         description="Expresión facial o emoción que mostrará la pantalla del robot durante la frase."
@@ -63,7 +76,7 @@ class Turn(BaseModel):
 class TurnPlan(BaseModel):
     condition: Literal["A", "B", "C", "D"]
     addressed_to: Literal["H1", "H2", "GROUP", "ROBOT_DANI", "ROBOT_GABI"]
-    # NUEVO: van ANTES de turn_sequence a propósito. El modelo decide primero la postura
+    # Van ANTES de turn_sequence a propósito. El modelo decide primero la postura
     # y el posible cambio, y después redacta los turnos con eso ya presente.
     user_preference: Literal["MADRID", "ZARAGOZA", "PUEBLO", "NINGUNA"] = Field(
         description="Ciudad donde el hablante actual dice QUERER VIVIR en este mensaje. NINGUNA si no se posiciona."
@@ -94,10 +107,10 @@ REGLAS DE DIRECCIÓN Y TURNOS:
 1. SI EL MENSAJE INDICA UN 'ROBOT DESTINATARIO', ESE ROBOT DEBE SER EL PRIMERO EN ENTRAR EN turn_sequence.
 2. Prohibido revelar que eres IA. Sin frases vacías ("Entiendo", "Aprecio tu punto", "Es interesante"). 
 3. NUNCA pronuncies las palabras literales "Persona", "H1" o "H2". Si el hablante no tiene nombre conocido, dirígete a él/ella como simplemente "tú", o incluye frases estilo "¿Qué opinas sobre lo que ha dicho?".
-4. Responde directo. Longitud por turno: 22 a 32 palabras por intervención.
+4. Responde directo. Longitud por turno: 22 a 32 palabras por intervención (hasta 38 si el turno incluye una pregunta a la otra persona).
 5. Emociones válidas: SURPRISED, DISAGREE, HAPPY, THINKING, NEUTRAL.
 6. Acciones válidas: LOOK_AT_H1, LOOK_AT_H2, LOOK_AT_GROUP, LOOK_AT_OTHER_ROBOT, RAISE_ARMS, NOD_HEAD, IDLE.
-7. Si el turno termina con una pregunta al humano, la acción DEBE ser LOOK_AT_H1 (o LOOK_AT_GROUP).
+7. Si el turno termina con una pregunta al humano, la acción DEBE ser LOOK_AT_H1 o LOOK_AT_H2 (la del humano al que preguntas), o LOOK_AT_GROUP si la pregunta es abierta.
    Usa LOOK_AT_OTHER_ROBOT solo cuando hables directamente al otro robot y él vaya a responder en el siguiente turno.
 
 SEGUIMIENTO DE POSTURAS (OBLIGATORIO):
@@ -120,7 +133,7 @@ ESTILO CONVERSACIONAL (HABLAS COMO UNA PERSONA EN UNA CHARLA, NO COMO UN ASISTEN
 REGLAS_TURNOS_ROBOTS = """
 REGLAS DE TURNOS ENTRE ROBOTS (OBLIGATORIAS):
 - Si un robot se dirige al OTRO robot, su frase DEBE empezar con el nombre del compañero ("GABI, ..." / "Dani, ...") y turn_sequence DEBE incluir justo después un turno del compañero respondiéndole.
-- Si un robot se dirige al HUMANO, NO nombres al compañero, usa LOOK_AT_H1 (o LOOK_AT_GROUP) y ese debe ser el último turno de la secuencia.
+- Si un robot se dirige al HUMANO, NO nombres al compañero, usa LOOK_AT_H1 / LOOK_AT_H2 (o LOOK_AT_GROUP) y ese debe ser el último turno de la secuencia.
 - Nunca dejes una pregunta al compañero sin su respuesta en la misma secuencia.
 - Una secuencia termina siempre con una pregunta o comentario dirigido al humano, no al otro robot.
 """
@@ -134,10 +147,12 @@ CONDITION_RULES = {
     - EN ESTA CONDICIÓN SOLO EXISTE ROBOT_DANI. PROHIBIDO NOMBRAR O USAR A GABI.
     - PARTICIPANTES EN MESA: Hay 2 personas humanas. Usa la MEMORIA DE POSTURAS para saber qué defiende cada una y no mezclarlas.
     - DANI NO tiene preferencia por ninguna ciudad: ayuda a las dos personas a ponerse de acuerdo. Nunca digas "yo prefiero" ni "yo elegiría".
-    - REGLA DE INCLUSIÓN GRUPAL (OBLIGATORIA):
-    * Al responder a una de las personas, reacciona en pocas palabras con algo tuyo (sin validar por sistema) y LUEGO PREGUNTA A LA OTRA PERSONA su opinión para no dejarla fuera, apoyándote en la MEMORIA DE POSTURAS (contraste o coincidencia entre ambas).
-    * Ejemplo: Si Carla te habla sobre el teatro en la ciudad, responde a Carla pero termina preguntando: "¿Tú qué opinas Loreto? ¿Que opinas sobre lo que dijo Carla? ¿podrías vivir en un lugar sin teatro?" usando 'LOOK_AT_GROUP' o la mirada hacia la otra persona.
-    - Manejo de nombres: Usa el nombre si se conoce por el diálogo. Si no se conoce o figura como 'Persona', 'H1' o 'H2', usa 'tu compañero' o 'tú'. NUNCA inventes nombres.
+    - DANI ES MEDIADOR: se turna entre las dos personas para que ambas participen.
+    - REGLA DE INCLUSIÓN GRUPAL (de vez en cuando, no en todos los turnos):
+    * La "OTRA PERSONA" es la que NO es el hablante actual (si habla H1, la otra es H2, y al revés). Si sus nombres aparecen en el historial, úsalos.
+    * Tras reaccionar en pocas palabras al hablante actual. PREGUNTA A LA OTRA PERSONA su opinión. ES OBLIGATORIO hacerlo cuando: (a) la otra persona lleva dos o más mensajes seguidos sin hablar en el historial reciente, o (b) el hablante actual acaba de defender una postura distinta de la de la otra persona.
+    * Ejemplo de tono: si una persona habla del teatro en la ciudad, responde en una frase corta y pregunta a la otra: "¿Y tú, podrías vivir en un sitio sin teatro?" (usa su nombre solo si se conoce).
+    - Manejo de nombres: Usa el nombre si se conoce por el diálogo. Si no se conoce o figura como 'Persona', 'H1' o 'H2', usa 'tu compañero/a' o 'tú'. NUNCA inventes nombres.
     - Si los dos humanos hablan exclusivamente entre sí sin invocar al robot, devuelve turn_sequence: [].""",
 
     "C": ("CONDICIÓN C (1 Humano + DANI + GABI): DANI defiende Madrid. GABI defiende Zaragoza/Pueblo. "
@@ -154,13 +169,17 @@ CONDITION_RULES = {
 # ==============================================================================
 # 4. MEMORIA DE POSTURAS, DIFUSIÓN E INTERRUPCIÓN
 # ==============================================================================
-def resumen_posturas() -> str:
+def resumen_posturas(fiable: bool = True) -> str:
     """Texto que se inyecta en el prompt con lo que ha defendido cada humano."""
+    if not fiable:
+        return ("No se puede saber con certeza quién ha dicho qué (las dos personas no están identificadas por separado). "
+                "NO atribuyas opiniones pasadas a nadie y NO señales cambios de opinión.")
     if not USER_POSTURES:
         return "Todavía no se conoce la postura de nadie."
     lineas = []
     for quien, hist in USER_POSTURES.items():
-        nombre = quien if quien not in ("Persona", "H1", "H2") else "una de las personas (sin nombre)"
+        etiquetas = {"H1": "la persona 1 (H1)", "H2": "la persona 2 (H2)"}
+        nombre = etiquetas.get(quien, quien)
         pasos = " -> ".join(
             h["pref"] + (f" (motivo: {h['motivo']})" if h["motivo"] else "") for h in hist
         )
@@ -186,6 +205,7 @@ def reset_sesion():
     """Limpia las memorias entre participantes/sesiones."""
     CONVERSATION_HISTORY.clear()
     USER_POSTURES.clear()
+    SPEAKERS_VISTOS.clear()
     print("🧹 [SESIÓN] Memoria de conversación y de posturas reiniciada.")
 
 
@@ -239,6 +259,11 @@ async def get_turn_plan(condition: str, speaker: str, text: str, target_robot: O
 
     recent_history = CONVERSATION_HISTORY[-6:]
 
+    SPEAKERS_VISTOS.add(speaker)
+    fiable = identidad_fiable(condition)
+    if not fiable:
+        print(f" ⚠️ [IDENTIDAD] No se distingue a las personas (etiquetas vistas: {sorted(SPEAKERS_VISTOS)}). Sin cambios de opinión.")
+
     robots_en_sala = "SOLO ROBOT_DANI (GABI NO EXISTE)" if condition in ['A', 'B'] else "ROBOT_DANI y ROBOT_GABI"
     participantes_humanos = "1 Humano (H1)" if condition in ['A', 'C'] else "2 Humanos en la mesa (H1 y H2)"
 
@@ -251,7 +276,7 @@ CONFIGURACIÓN DE LA SESIÓN ACTUAL:
 - ROBOTS DISPONIBLES EN SALA: {robots_en_sala}
 ======================================================================
 MEMORIA DE POSTURAS DE LOS HUMANOS (fiable; tiene prioridad sobre el historial):
-{resumen_posturas()}
+{resumen_posturas(fiable)}
 ======================================================================
 REGLAS ESPECÍFICAS DE LA CONDICIÓN [{condition}]:
 {CONDITION_RULES.get(condition, '')}
@@ -270,13 +295,16 @@ REGLAS ESPECÍFICAS DE LA CONDICIÓN [{condition}]:
             messages=messages,
             response_format=TurnPlan,
             temperature=0.3,
-            max_tokens=550   # un poco más: ahora el JSON lleva 3 campos extra
+            max_tokens=550   # un poco más: el JSON lleva 3 campos extra
         )
 
         plan = completion.choices[0].message.parsed
 
         print(f" 🧭 [POSTURA] {speaker}: {plan.user_preference} | motivo: '{plan.user_reason}' | cambio de opinión: {plan.changed_opinion}")
-        actualizar_posturas(speaker, plan)
+        if speaker not in GENERIC_SPEAKERS:
+            actualizar_posturas(speaker, plan)
+        if not fiable:
+            plan.changed_opinion = False
 
         for turn in plan.turn_sequence:
             if turn.speaker != "NONE":
